@@ -1,0 +1,25 @@
+{
+  "name": "novaper",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Novaper is an AI Windows desktop operator with live observation, replayable runs, and dual authentication.",
+  "type": "module",
+  "scripts": {
+    "start": "tsx apps/runner/src/index.ts",
+    "dev": "tsx watch apps/runner/src/index.ts",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "archiver": "^7.0.1",
+    "express": "^5.2.1",
+    "openai": "^6.27.0",
+    "undici": "^7.16.0"
+  },
+  "devDependencies": {
+    "@types/archiver": "^7.0.0",
+    "@types/express": "^5.0.6",
+    "@types/node": "^25.3.5",
+    "tsx": "^4.21.0",
+    "typescript": "^5.9.3"
+  }
+}

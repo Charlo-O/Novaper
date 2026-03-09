@@ -1,0 +1,13 @@
+node_modules/
+.env
+.env.local
+.env.*.local
+
+data/auth/*
+!data/auth/.gitkeep
+data/live-sessions/*
+!data/live-sessions/.gitkeep
+data/runs/*
+!data/runs/.gitkeep
+
+output/

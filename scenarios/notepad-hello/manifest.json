@@ -1,0 +1,60 @@
+{
+  "id": "notepad-save-note-v1",
+  "title": "Notepad 保存文本到文件",
+  "owner": "ops-team",
+  "description": "在 Windows Notepad 中输入给定文本并保存到指定路径。",
+  "target_apps": ["notepad.exe", "explorer.exe"],
+  "display_profile": {
+    "width": 1600,
+    "height": 900,
+    "scale": 100,
+    "single_monitor": true
+  },
+  "desktop_preconditions": {
+    "machine_online": true,
+    "interactive_session": true,
+    "foreground_guard": true
+  },
+  "execution_order": ["uia", "code", "vision"],
+  "autonomous_mode": true,
+  "tool_profiles": {
+    "code": ["powershell_helper", "file_ops", "process_ops"],
+    "vision_actions": ["click", "double_click", "scroll", "type", "keypress", "wait"]
+  },
+  "input_schema": {
+    "type": "object",
+    "required": ["filePath", "text"],
+    "properties": {
+      "filePath": {
+        "type": "string",
+        "description": "需要保存的完整文件路径，例如 C:\\Users\\Public\\Documents\\winai-demo.txt"
+      },
+      "text": {
+        "type": "string",
+        "description": "要写入记事本并保存的完整文本"
+      }
+    },
+    "examples": [
+      {
+        "filePath": "C:\\Users\\Public\\Documents\\winai-demo.txt",
+        "text": "WinAI smoke test on 2026-03-09"
+      }
+    ]
+  },
+  "success_criteria": [
+    "目标文件存在",
+    "目标文件文本内容与输入一致",
+    "Run 留存关键截图和事件流"
+  ],
+  "verifiers": [
+    {
+      "type": "file",
+      "path": "{{input.filePath}}"
+    },
+    {
+      "type": "file_text_equals",
+      "path": "{{input.filePath}}",
+      "value": "{{input.text}}"
+    }
+  ]
+}
