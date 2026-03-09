@@ -108,6 +108,36 @@ function ConvertFrom-HandleString {
   return [System.IntPtr]::new([int64]$Handle)
 }
 
+function ConvertTo-SafeRoundedNumber {
+  param(
+    [double]$Value,
+    [int]$Fallback = 0,
+    [switch]$NonNegative
+  )
+
+  if ([double]::IsNaN($Value) -or [double]::IsInfinity($Value)) {
+    return $Fallback
+  }
+
+  $rounded = [int][math]::Round($Value)
+  if ($NonNegative -and $rounded -lt 0) {
+    return 0
+  }
+
+  return $rounded
+}
+
+function ConvertTo-BoundingRectInfo {
+  param($Rect)
+
+  return @{
+    x = ConvertTo-SafeRoundedNumber -Value $Rect.X
+    y = ConvertTo-SafeRoundedNumber -Value $Rect.Y
+    width = ConvertTo-SafeRoundedNumber -Value $Rect.Width -NonNegative
+    height = ConvertTo-SafeRoundedNumber -Value $Rect.Height -NonNegative
+  }
+}
+
 function Get-PrimaryDisplayInfo {
   $bounds = [System.Windows.Forms.Screen]::PrimaryScreen.Bounds
   return @{
@@ -319,12 +349,7 @@ function ConvertTo-ElementInfo {
     controlType = $Element.Current.ControlType.ProgrammaticName.Split(".")[-1]
     processId = $Element.Current.ProcessId
     isOffscreen = $Element.Current.IsOffscreen
-    boundingRect = @{
-      x = [math]::Round($rect.X)
-      y = [math]::Round($rect.Y)
-      width = [math]::Round($rect.Width)
-      height = [math]::Round($rect.Height)
-    }
+    boundingRect = ConvertTo-BoundingRectInfo -Rect $rect
   }
 }
 
@@ -454,6 +479,103 @@ function Send-KeyCombo {
   }
 }
 
+function Invoke-WithRetry {
+  param(
+    [scriptblock]$Action,
+    [int]$Attempts = 5,
+    [int]$DelayMs = 80,
+    [string]$ErrorMessage = "Operation failed."
+  )
+
+  for ($attempt = 1; $attempt -le $Attempts; $attempt++) {
+    try {
+      return & $Action
+    } catch {
+      if ($attempt -ge $Attempts) {
+        $detail = $_.Exception.Message
+        if ([string]::IsNullOrWhiteSpace($detail)) {
+          throw $ErrorMessage
+        }
+        throw "${ErrorMessage} ${detail}"
+      }
+      Start-Sleep -Milliseconds $DelayMs
+    }
+  }
+}
+
+function Get-ClipboardSnapshot {
+  try {
+    $dataObject = Invoke-WithRetry -ErrorMessage "Failed to read clipboard." -Action {
+      [System.Windows.Forms.Clipboard]::GetDataObject()
+    }
+    return @{
+      hasData = ($null -ne $dataObject)
+      dataObject = $dataObject
+    }
+  } catch {
+    return @{
+      hasData = $false
+      dataObject = $null
+    }
+  }
+}
+
+function Restore-ClipboardSnapshot {
+  param($Snapshot)
+
+  if ($null -eq $Snapshot) {
+    return
+  }
+
+  try {
+    if (-not $Snapshot.hasData -or $null -eq $Snapshot.dataObject) {
+      Invoke-WithRetry -ErrorMessage "Failed to clear clipboard." -Action {
+        [System.Windows.Forms.Clipboard]::Clear()
+      } | Out-Null
+      return
+    }
+
+    Invoke-WithRetry -ErrorMessage "Failed to restore clipboard." -Action {
+      [System.Windows.Forms.Clipboard]::SetDataObject($Snapshot.dataObject, $true)
+    } | Out-Null
+  } catch {
+    # Best-effort restore. Input reliability is more important than surfacing clipboard restore failures.
+  }
+}
+
+function Send-TextInput {
+  param(
+    [string]$Text,
+    [switch]$SelectAllFirst
+  )
+
+  if ($SelectAllFirst) {
+    [System.Windows.Forms.SendKeys]::SendWait("^a")
+    Start-Sleep -Milliseconds 80
+  }
+
+  if ([string]::IsNullOrEmpty($Text)) {
+    if ($SelectAllFirst) {
+      Send-KeyCombo -Keys @("DELETE")
+    }
+    return
+  }
+
+  $clipboardSnapshot = $null
+  try {
+    $clipboardSnapshot = Get-ClipboardSnapshot
+    Invoke-WithRetry -ErrorMessage "Failed to write clipboard text." -Action {
+      [System.Windows.Forms.Clipboard]::SetText($Text)
+    } | Out-Null
+    Start-Sleep -Milliseconds 60
+    Send-KeyCombo -Keys @("CTRL", "V")
+  } catch {
+    [System.Windows.Forms.SendKeys]::SendWait((Escape-SendKeysText -Text $Text))
+  } finally {
+    Restore-ClipboardSnapshot -Snapshot $clipboardSnapshot
+  }
+}
+
 function Invoke-Click {
   param(
     [int]$X,
@@ -514,9 +636,7 @@ function Set-UiElementText {
     $rect = $element.Current.BoundingRectangle
     Invoke-Click -X ([int]($rect.X + ($rect.Width / 2))) -Y ([int]($rect.Y + ($rect.Height / 2)))
     Start-Sleep -Milliseconds 100
-    [System.Windows.Forms.SendKeys]::SendWait("^a")
-    Start-Sleep -Milliseconds 60
-    [System.Windows.Forms.SendKeys]::SendWait((Escape-SendKeysText -Text $Value))
+    Send-TextInput -Text $Value -SelectAllFirst
   }
 
   return @{
@@ -569,7 +689,7 @@ function Invoke-ExecActions {
         [WinAI.NativeMethods]::mouse_event($MOUSEEVENTF_WHEEL, 0, 0, [uint32]$delta, [UIntPtr]::Zero)
       }
       "type" {
-        [System.Windows.Forms.SendKeys]::SendWait((Escape-SendKeysText -Text ([string]$action.text)))
+        Send-TextInput -Text ([string]$action.text)
       }
       "keypress" {
         Send-KeyCombo -Keys ([string[]]$action.keys)

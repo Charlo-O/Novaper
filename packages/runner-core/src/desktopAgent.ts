@@ -145,6 +145,8 @@ export async function driveDesktopAgent(context: DriveDesktopAgentContext): Prom
 
   let latestScreenshotUrl: string | undefined;
   let lastExecutedToolSignature: { name: string; signature: string } | undefined;
+  let executedToolCallCount = 0;
+  let remindedToolUse = false;
   const initialInput: ResponseInputItem[] = [];
   if (!context.previousResponseId) {
     initialInput.push({ role: "developer", content: context.developerPrompt });
@@ -185,6 +187,27 @@ export async function driveDesktopAgent(context: DriveDesktopAgentContext): Prom
     }
 
     if (functionCalls.length === 0 && computerCalls.length === 0) {
+      if (executedToolCallCount === 0) {
+        if (remindedToolUse) {
+          throw new Error("Model attempted to finish without using any desktop tools for the current instruction.");
+        }
+
+        remindedToolUse = true;
+        response = await context.client.createResponse({
+          model: context.model,
+          previous_response_id: response.id,
+          tools,
+          input: [
+            {
+              role: "user",
+              content:
+                "You have not used any desktop tools for this instruction yet. Do not assume completion. Use at least one appropriate tool to inspect or act on the desktop, then verify the result before answering.",
+            },
+          ],
+        });
+        continue;
+      }
+
       return {
         summary: outputText || "Model finished without additional tool calls.",
         responseId: response.id,
@@ -220,6 +243,8 @@ export async function driveDesktopAgent(context: DriveDesktopAgentContext): Prom
             }
           : await tool.execute(args);
 
+      executedToolCallCount += 1;
+
       lastExecutedToolSignature =
         call.name === "desktop_actions"
           ? {
@@ -244,6 +269,7 @@ export async function driveDesktopAgent(context: DriveDesktopAgentContext): Prom
     for (const call of computerCalls) {
       const actions = extractComputerActions(call);
       let screenshot;
+      executedToolCallCount += 1;
 
       if (actions.length === 0 || actions.every((action) => action.type === "screenshot")) {
         screenshot = await context.sidecar.captureScreenshot();

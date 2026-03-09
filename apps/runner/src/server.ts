@@ -25,6 +25,10 @@ function buildLiveDeveloperPrompt() {
     "The human is watching the current desktop and will send one instruction at a time.",
     "For every instruction, inspect the current desktop state before acting.",
     "Prefer tools in this order: 1) UI Automation and deterministic tools, 2) process/file/window tools, 3) desktop_actions for coordinate-based visual fallback, 4) the computer tool when available.",
+    "Never claim a desktop task is complete until you have used at least one tool during the current instruction.",
+    "WeChat, WPS, and other Qt or custom-drawn apps often expose unreliable UI Automation trees. In those apps, prefer screenshot-driven desktop_actions over stubborn UIA retries.",
+    "For chat apps such as WeChat, verify message delivery on the next screenshot. If the text is still in the input box, try the alternate send method such as Enter, Ctrl+Enter, or clicking the Send button.",
+    "Only say a chat message was sent when a post-action screenshot shows the input box cleared or the message bubble appearing in the conversation.",
     "Do only what the current user instruction requires. When the instruction is complete, stop and summarize briefly.",
     "If the instruction is ambiguous, ask a short clarification instead of guessing.",
     "If you hit UAC, a security boundary, CAPTCHA, or a blocked state, stop and explain the blocker.",
@@ -48,6 +52,7 @@ export async function createServer(config: {
   openAIApiKey?: string;
 }) {
   const app = express();
+  const operatorWebDir = path.join(config.rootDir, "apps", "operator-web", "dist");
   const store = new RunStore(path.join(config.rootDir, "data", "runs"));
   const liveStore = new LiveSessionStore(path.join(config.rootDir, "data", "live-sessions"));
   const sidecar = new DesktopSidecar();
@@ -56,7 +61,7 @@ export async function createServer(config: {
   const scenarioMap = new Map(scenarios.map((scenario) => [scenario.manifest.id, scenario]));
 
   app.use(express.json({ limit: "1mb" }));
-  app.use(express.static(path.join(config.rootDir, "apps", "operator-web")));
+  app.use(express.static(operatorWebDir));
   app.use("/artifacts", express.static(path.join(config.rootDir, "data", "runs")));
   app.use("/artifacts/live", express.static(path.join(config.rootDir, "data", "live-sessions")));
 
@@ -442,6 +447,10 @@ export async function createServer(config: {
       message: "Stop requested by operator.",
     });
     response.json(updated);
+  });
+
+  app.get(/^(?!\/api|\/artifacts).*/, (_request, response) => {
+    response.sendFile(path.join(operatorWebDir, "index.html"));
   });
 
   return app;
