@@ -24,7 +24,7 @@ export interface LiveEvent {
   id: string;
   sessionId: string;
   at: string;
-  type: "status" | "log" | "tool_call" | "tool_result" | "computer_action" | "screenshot" | "error" | "message";
+  type: "status" | "log" | "tool_call" | "tool_result" | "computer_action" | "screenshot" | "error" | "message" | "agent_route";
   level: "info" | "warning" | "error";
   message: string;
   payload?: unknown;

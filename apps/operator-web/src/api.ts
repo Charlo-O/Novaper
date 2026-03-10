@@ -502,7 +502,8 @@ type LiveEventRecord = {
     | 'computer_action'
     | 'screenshot'
     | 'error'
-    | 'message';
+    | 'message'
+    | 'agent_route';
   level: 'info' | 'warning' | 'error';
   message: string;
   payload?: unknown;
@@ -1216,6 +1217,21 @@ export function sendMessageStream(
       return;
     }
 
+    if (liveEvent.type === 'agent_route') {
+      const agentType =
+        liveEvent.payload &&
+        typeof liveEvent.payload === 'object' &&
+        'agentType' in liveEvent.payload
+          ? (liveEvent.payload as { agentType: string }).agentType
+          : 'desktop';
+      onThinking({
+        type: 'thinking',
+        role: 'assistant',
+        chunk: `[Agent: ${agentType === 'cli' ? 'CLI (pi)' : 'Desktop'}]`,
+      });
+      return;
+    }
+
     if (liveEvent.type === 'tool_call') {
       currentTool = extractToolCall(liveEvent.payload, liveEvent.message);
       return;
@@ -1808,6 +1824,20 @@ export function sendLayeredMessageStream(
 
   const handleLiveEvent = (liveEvent: LiveEventRecord) => {
     if (closed || finalized || runId !== layeredChatToken) {
+      return;
+    }
+
+    if (liveEvent.type === 'agent_route') {
+      const agentType =
+        liveEvent.payload &&
+        typeof liveEvent.payload === 'object' &&
+        'agentType' in liveEvent.payload
+          ? (liveEvent.payload as { agentType: string }).agentType
+          : 'desktop';
+      handlers.onMessage({
+        type: 'message',
+        content: `[Agent: ${agentType === 'cli' ? 'CLI (pi)' : 'Desktop'}]`,
+      });
       return;
     }
 

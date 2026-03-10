@@ -8,6 +8,8 @@ import { LiveSessionStore } from "./liveStore.js";
 import { executeRun } from "../../../packages/runner-core/src/runExecutor.js";
 import { DesktopSidecar } from "../../../packages/desktop-runtime/src/sidecar.js";
 import { driveDesktopAgent } from "../../../packages/runner-core/src/desktopAgent.js";
+import { drivePiAgent } from "../../../packages/runner-core/src/piAgent.js";
+import { classifyInstruction } from "../../../packages/runner-core/src/instructionClassifier.js";
 import { AuthService } from "./authService.js";
 import { getProxyStatus } from "./networkProxy.js";
 
@@ -387,34 +389,73 @@ export async function createServer(config: {
 
     void (async () => {
       try {
-        const result = await driveDesktopAgent({
-          client: auth.client,
-          model: updated.model,
-          developerPrompt: buildLiveDeveloperPrompt(),
-          userContent: instruction,
-          previousResponseId: auth.authProvider === "api-key" ? updated.previousResponseId : undefined,
-          sidecar,
-          artifactDir: updated.artifactDir,
-          screenshotBaseUrl: `/artifacts/live/${updated.id}`,
-          onEvent: async (event) => {
-            await liveStore.appendEvent(updated.id, event);
-          },
-          shouldStop: () => Boolean(liveStore.getSession(updated.id)?.stopRequested),
-          maxTurns: 30,
+        // Classify instruction to determine agent routing
+        let agentType: "cli" | "desktop" = "desktop";
+        try {
+          agentType = await classifyInstruction(instruction, auth.client, updated.model);
+        } catch {
+          agentType = "desktop"; // Safe fallback
+        }
+
+        await liveStore.appendEvent(updated.id, {
+          type: "agent_route",
+          level: "info",
+          message: `Routed to ${agentType} agent.`,
+          payload: { agentType },
         });
 
-        await liveStore.updateSession(updated.id, {
-          status: "idle",
-          previousResponseId: auth.authProvider === "api-key" ? result.responseId : undefined,
-          latestSummary: result.summary,
-          latestScreenshotUrl: result.latestScreenshotUrl ?? updated.latestScreenshotUrl,
-        });
-        await liveStore.appendEvent(updated.id, {
-          type: "status",
-          level: "info",
-          message: "Instruction completed.",
-          payload: { summary: result.summary },
-        });
+        if (agentType === "cli") {
+          const result = await drivePiAgent({
+            instruction,
+            client: auth.client,
+            model: updated.model,
+            artifactDir: updated.artifactDir,
+            onEvent: async (event) => {
+              await liveStore.appendEvent(updated.id, event);
+            },
+            shouldStop: () => Boolean(liveStore.getSession(updated.id)?.stopRequested),
+          });
+
+          await liveStore.updateSession(updated.id, {
+            status: "idle",
+            latestSummary: result.summary,
+          });
+          await liveStore.appendEvent(updated.id, {
+            type: "status",
+            level: "info",
+            message: "Instruction completed.",
+            payload: { summary: result.summary },
+          });
+        } else {
+          const result = await driveDesktopAgent({
+            client: auth.client,
+            model: updated.model,
+            developerPrompt: buildLiveDeveloperPrompt(),
+            userContent: instruction,
+            previousResponseId: auth.authProvider === "api-key" ? updated.previousResponseId : undefined,
+            sidecar,
+            artifactDir: updated.artifactDir,
+            screenshotBaseUrl: `/artifacts/live/${updated.id}`,
+            onEvent: async (event) => {
+              await liveStore.appendEvent(updated.id, event);
+            },
+            shouldStop: () => Boolean(liveStore.getSession(updated.id)?.stopRequested),
+            maxTurns: 30,
+          });
+
+          await liveStore.updateSession(updated.id, {
+            status: "idle",
+            previousResponseId: auth.authProvider === "api-key" ? result.responseId : undefined,
+            latestSummary: result.summary,
+            latestScreenshotUrl: result.latestScreenshotUrl ?? updated.latestScreenshotUrl,
+          });
+          await liveStore.appendEvent(updated.id, {
+            type: "status",
+            level: "info",
+            message: "Instruction completed.",
+            payload: { summary: result.summary },
+          });
+        }
       } catch (error) {
         await liveStore.updateSession(updated.id, {
           status: "error",
