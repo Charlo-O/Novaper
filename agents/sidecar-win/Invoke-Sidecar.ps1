@@ -12,13 +12,13 @@ Add-Type -AssemblyName System.Windows.Forms
 Add-Type -AssemblyName UIAutomationClient
 Add-Type -AssemblyName UIAutomationTypes
 
-if (-not ("WinAI.NativeMethods" -as [type])) {
+if (-not ("Novaper.NativeMethods" -as [type])) {
   Add-Type -TypeDefinition @"
 using System;
 using System.Runtime.InteropServices;
 using System.Text;
 
-namespace WinAI {
+namespace Novaper {
   public delegate bool EnumWindowsProc(IntPtr hWnd, IntPtr lParam);
 
   public static class NativeMethods {
@@ -171,26 +171,26 @@ function Capture-ScreenshotData {
 }
 
 function Get-WindowList {
-  $foreground = [WinAI.NativeMethods]::GetForegroundWindow()
+  $foreground = [Novaper.NativeMethods]::GetForegroundWindow()
   $windows = [System.Collections.Generic.List[object]]::new()
-  $callback = [WinAI.EnumWindowsProc]{
+  $callback = [Novaper.EnumWindowsProc]{
     param([System.IntPtr]$hWnd, [System.IntPtr]$lParam)
 
-    if (-not [WinAI.NativeMethods]::IsWindowVisible($hWnd)) {
+    if (-not [Novaper.NativeMethods]::IsWindowVisible($hWnd)) {
       return $true
     }
 
-    $length = [WinAI.NativeMethods]::GetWindowTextLength($hWnd)
+    $length = [Novaper.NativeMethods]::GetWindowTextLength($hWnd)
     if ($length -le 0) {
       return $true
     }
 
     $builder = [System.Text.StringBuilder]::new($length + 1)
-    [void][WinAI.NativeMethods]::GetWindowText($hWnd, $builder, $builder.Capacity)
+    [void][Novaper.NativeMethods]::GetWindowText($hWnd, $builder, $builder.Capacity)
     $title = $builder.ToString()
 
     [uint32]$processId = 0
-    [void][WinAI.NativeMethods]::GetWindowThreadProcessId($hWnd, [ref]$processId)
+    [void][Novaper.NativeMethods]::GetWindowThreadProcessId($hWnd, [ref]$processId)
     $processName = ""
     try {
       $processName = (Get-Process -Id $processId).ProcessName
@@ -209,7 +209,7 @@ function Get-WindowList {
     return $true
   }
 
-  [void][WinAI.NativeMethods]::EnumWindows($callback, [System.IntPtr]::Zero)
+  [void][Novaper.NativeMethods]::EnumWindows($callback, [System.IntPtr]::Zero)
   return $windows
 }
 
@@ -241,8 +241,8 @@ function Focus-Window {
   )
 
   $hWnd = Resolve-WindowHandle -Handle $Handle -TitleContains $TitleContains
-  [void][WinAI.NativeMethods]::ShowWindowAsync($hWnd, $SW_RESTORE)
-  $result = [WinAI.NativeMethods]::SetForegroundWindow($hWnd)
+  [void][Novaper.NativeMethods]::ShowWindowAsync($hWnd, $SW_RESTORE)
+  $result = [Novaper.NativeMethods]::SetForegroundWindow($hWnd)
   Start-Sleep -Milliseconds 150
   return @{
     focused = [bool]$result
@@ -467,15 +467,15 @@ function Send-KeyCombo {
   }
 
   foreach ($code in $modifierCodes) {
-    [WinAI.NativeMethods]::keybd_event($code, 0, 0, [UIntPtr]::Zero)
+    [Novaper.NativeMethods]::keybd_event($code, 0, 0, [UIntPtr]::Zero)
   }
   foreach ($code in $mainCodes) {
-    [WinAI.NativeMethods]::keybd_event($code, 0, 0, [UIntPtr]::Zero)
+    [Novaper.NativeMethods]::keybd_event($code, 0, 0, [UIntPtr]::Zero)
     Start-Sleep -Milliseconds 40
-    [WinAI.NativeMethods]::keybd_event($code, 0, $KEYEVENTF_KEYUP, [UIntPtr]::Zero)
+    [Novaper.NativeMethods]::keybd_event($code, 0, $KEYEVENTF_KEYUP, [UIntPtr]::Zero)
   }
   for ($index = $modifierCodes.Count - 1; $index -ge 0; $index--) {
-    [WinAI.NativeMethods]::keybd_event($modifierCodes[$index], 0, $KEYEVENTF_KEYUP, [UIntPtr]::Zero)
+    [Novaper.NativeMethods]::keybd_event($modifierCodes[$index], 0, $KEYEVENTF_KEYUP, [UIntPtr]::Zero)
   }
 }
 
@@ -584,7 +584,7 @@ function Invoke-Click {
     [string]$Button = "left"
   )
 
-  [void][WinAI.NativeMethods]::SetCursorPos($X, $Y)
+  [void][Novaper.NativeMethods]::SetCursorPos($X, $Y)
   Start-Sleep -Milliseconds 50
 
   $down = if ($Button -eq "right") { $MOUSEEVENTF_RIGHTDOWN } else { $MOUSEEVENTF_LEFTDOWN }
@@ -592,9 +592,9 @@ function Invoke-Click {
   $repeat = if ($DoubleClick) { 2 } else { 1 }
 
   for ($index = 0; $index -lt $repeat; $index++) {
-    [WinAI.NativeMethods]::mouse_event($down, 0, 0, 0, [UIntPtr]::Zero)
+    [Novaper.NativeMethods]::mouse_event($down, 0, 0, 0, [UIntPtr]::Zero)
     Start-Sleep -Milliseconds 35
-    [WinAI.NativeMethods]::mouse_event($up, 0, 0, 0, [UIntPtr]::Zero)
+    [Novaper.NativeMethods]::mouse_event($up, 0, 0, 0, [UIntPtr]::Zero)
     Start-Sleep -Milliseconds 90
   }
 }
@@ -665,28 +665,28 @@ function Invoke-ExecActions {
           throw "Drag action requires at least two path points."
         }
         $start = $action.path[0]
-        [void][WinAI.NativeMethods]::SetCursorPos([int]$start.x, [int]$start.y)
+        [void][Novaper.NativeMethods]::SetCursorPos([int]$start.x, [int]$start.y)
         Start-Sleep -Milliseconds 50
-        [WinAI.NativeMethods]::mouse_event($MOUSEEVENTF_LEFTDOWN, 0, 0, 0, [UIntPtr]::Zero)
+        [Novaper.NativeMethods]::mouse_event($MOUSEEVENTF_LEFTDOWN, 0, 0, 0, [UIntPtr]::Zero)
         for ($index = 1; $index -lt $action.path.Count; $index++) {
           $point = $action.path[$index]
-          [void][WinAI.NativeMethods]::SetCursorPos([int]$point.x, [int]$point.y)
+          [void][Novaper.NativeMethods]::SetCursorPos([int]$point.x, [int]$point.y)
           Start-Sleep -Milliseconds 25
         }
-        [WinAI.NativeMethods]::mouse_event($MOUSEEVENTF_LEFTUP, 0, 0, 0, [UIntPtr]::Zero)
+        [Novaper.NativeMethods]::mouse_event($MOUSEEVENTF_LEFTUP, 0, 0, 0, [UIntPtr]::Zero)
       }
       "move" {
-        [void][WinAI.NativeMethods]::SetCursorPos([int]$action.x, [int]$action.y)
+        [void][Novaper.NativeMethods]::SetCursorPos([int]$action.x, [int]$action.y)
       }
       "scroll" {
         $x = Get-PropValue -Object $action -Name "x"
         $y = Get-PropValue -Object $action -Name "y"
         if ($null -ne $x -and $null -ne $y) {
-          [void][WinAI.NativeMethods]::SetCursorPos([int]$x, [int]$y)
+          [void][Novaper.NativeMethods]::SetCursorPos([int]$x, [int]$y)
         }
         $scrollY = Get-PropValue -Object $action -Name "scroll_y" -Default 0
         $delta = [int]$scrollY
-        [WinAI.NativeMethods]::mouse_event($MOUSEEVENTF_WHEEL, 0, 0, [uint32]$delta, [UIntPtr]::Zero)
+        [Novaper.NativeMethods]::mouse_event($MOUSEEVENTF_WHEEL, 0, 0, [uint32]$delta, [UIntPtr]::Zero)
       }
       "type" {
         Send-TextInput -Text ([string]$action.text)

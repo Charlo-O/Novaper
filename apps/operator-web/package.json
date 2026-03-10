@@ -1,6 +1,7 @@
 {
-  "name": "tanstack-router-react-example-quickstart-file-based",
+  "name": "novaper-operator-web",
   "private": true,
+  "description": "Novaper operator web console.",
   "type": "module",
   "scripts": {
     "dev": "vite --port 3000",

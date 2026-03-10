@@ -27,7 +27,7 @@
     "properties": {
       "filePath": {
         "type": "string",
-        "description": "需要保存的完整文件路径，例如 C:\\Users\\Public\\Documents\\winai-demo.txt"
+        "description": "需要保存的完整文件路径，例如 C:\\Users\\Public\\Documents\\novaper-demo.txt"
       },
       "text": {
         "type": "string",
@@ -36,8 +36,8 @@
     },
     "examples": [
       {
-        "filePath": "C:\\Users\\Public\\Documents\\winai-demo.txt",
-        "text": "WinAI smoke test on 2026-03-09"
+        "filePath": "C:\\Users\\Public\\Documents\\novaper-demo.txt",
+        "text": "Novaper smoke test on 2026-03-09"
       }
     ]
   },

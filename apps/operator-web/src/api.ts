@@ -1,4 +1,4 @@
-// Modified from AutoGLM-GUI upstream for Novaper integration.
+// Adapted for Novaper integration.
 
 export function getErrorMessage(error: unknown): string {
   if (error instanceof Error) {
@@ -1543,7 +1543,7 @@ export async function checkVersion(): Promise<VersionCheckResponse> {
     current_version: status.version,
     latest_version: null,
     has_update: false,
-    release_url: 'https://github.com/suyiiyii/AutoGLM-GUI/releases',
+    release_url: 'https://github.com/Charlo-O/Novaper/releases',
     published_at: null,
     error: null,
   };

@@ -24,7 +24,6 @@ npm install
 | `PORT` | 服务端口 | `3333` |
 | `HOST` | 监听地址 | `127.0.0.1` |
 | `NOVAPER_PROXY_URL` | Novaper 显式代理地址 | 无 |
-| `WINAI_PROXY_URL` | 旧代理变量名，仍兼容 | 无 |
 | `HTTPS_PROXY` | 标准 HTTPS 代理 | 无 |
 | `HTTP_PROXY` | 标准 HTTP 代理 | 无 |
 | `ALL_PROXY` | 通用代理 | 无 |
@@ -79,10 +78,9 @@ npm start
 Novaper 启动时会强制为进程级网络流量配置代理，优先级如下：
 
 1. `NOVAPER_PROXY_URL`
-2. `WINAI_PROXY_URL`
-3. `HTTPS_PROXY`
-4. `HTTP_PROXY`
-5. `ALL_PROXY`
+2. `HTTPS_PROXY`
+3. `HTTP_PROXY`
+4. `ALL_PROXY`
 
 如果你的环境不走代理就会 `403`，应优先设置 `NOVAPER_PROXY_URL`，避免依赖其他工具的隐式代理识别。
 

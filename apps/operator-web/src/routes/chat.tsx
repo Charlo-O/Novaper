@@ -56,7 +56,7 @@ import {
 import { useTranslation } from '../lib/i18n-context';
 
 const CODEX_PRESET_NAME = 'codex';
-const CODEX_AGENT_NAME = 'code-x';
+const CODEX_AGENT_NAME = 'novaper-agent';
 const CODEX_BACKEND_AGENT_NAME = 'glm-async';
 const CODEX_DEFAULT_MODEL = 'gpt-5.4';
 
@@ -138,8 +138,8 @@ const AGENT_PRESETS = [
   },
   {
     name: CODEX_AGENT_NAME,
-    displayName: 'Code X Agent',
-    description: 'Use Codex OAuth and a handwritten Code X model name.',
+    displayName: 'Novaper Agent',
+    description: 'Use Codex OAuth through Novaper.',
     icon: ShieldCheck,
     defaultConfig: {},
   },
@@ -585,7 +585,7 @@ function ChatComponent() {
       return;
     }
     if (isUsingCodeX && !codexAuthenticated) {
-      showToast('请先完成 Code X 认证', 'error');
+      showToast('请先完成 Novaper 认证', 'error');
       return;
     }
 
@@ -916,7 +916,7 @@ function ChatComponent() {
                       model_name: e.target.value,
                     })
                   }
-                  placeholder="autoglm-phone-9b"
+                  placeholder="model-name"
                 />
               </div>
 
@@ -927,7 +927,7 @@ function ChatComponent() {
                 </Label>
                 {isUsingCodeX && (
                   <p className="text-xs text-slate-500 dark:text-slate-400">
-                    Code X 认证下仅支持 Code X Agent。
+                    Novaper 认证下仅支持 Novaper Agent。
                   </p>
                 )}
                 <div className="grid grid-cols-2 gap-2">

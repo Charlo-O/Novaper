@@ -3,7 +3,7 @@ import react from '@vitejs/plugin-react';
 import { tanstackRouter } from '@tanstack/router-plugin/vite';
 import path from 'path';
 
-// Modified from AutoGLM-GUI upstream for Novaper integration.
+// Adapted for Novaper integration.
 export default defineConfig({
   define: {
     __BACKEND_VERSION__: JSON.stringify(

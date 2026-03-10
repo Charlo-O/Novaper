@@ -1,44 +1,25 @@
-# TanStack Router - File-Based Quickstart Example
+# Novaper Operator Web
 
-A quickstart example using file-based routing.
+This app is the React + Vite operator console for Novaper.
 
-- [TanStack Router Docs](https://tanstack.com/router)
-
-## Start a new project based on this example
-
-To start a new project based on this example, run:
-
-```sh
-npx gitpick TanStack/router/tree/main/examples/react/quickstart-file-based quickstart-file-based
-```
-
-## Getting Started
+## Development
 
 Install dependencies:
 
 ```sh
-pnpm install
+npm install
 ```
 
-Start the development server:
+Start the frontend:
 
 ```sh
-pnpm dev
+npm run dev
 ```
+
+The Vite dev server runs on `http://127.0.0.1:3000` and proxies `/api` and `/artifacts` to the Novaper runner on `http://127.0.0.1:3333`.
 
 ## Build
 
-Build for production:
-
 ```sh
-pnpm build
+npm run build
 ```
-
-## About This Example
-
-This example demonstrates:
-
-- Quick setup with file-based routing
-- Automatic route generation
-- Minimal configuration
-- Type-safe routes

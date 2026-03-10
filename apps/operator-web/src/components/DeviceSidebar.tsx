@@ -697,7 +697,7 @@ export function DeviceSidebar({
           <div className="flex items-center gap-2">
             <div>
               <h2 className="text-base font-bold text-slate-900 dark:text-slate-100">
-                AutoGLM
+                Novaper
               </h2>
               <p className="text-xs text-slate-500 dark:text-slate-400">
                 {devices.length}{' '}

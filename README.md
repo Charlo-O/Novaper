@@ -52,7 +52,6 @@ npm install
 - `PORT`：默认 `3333`。
 - `HOST`：默认 `127.0.0.1`。
 - `NOVAPER_PROXY_URL`：显式指定代理。
-- `WINAI_PROXY_URL`：旧变量名，仍兼容。
 
 3. 启动服务
 

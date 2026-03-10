@@ -21,7 +21,7 @@ export const zh = {
     versionMismatchDetail: '前端: v{frontend}，后端: v{backend}',
   },
   chat: {
-    welcomeTitle: '欢迎使用 AutoGLM',
+    welcomeTitle: '欢迎使用 Novaper',
     connectDevice: '连接 ADB 设备开始使用',
     configuration: '配置',
     configureApi: '配置您的 API 设置以开始使用',
@@ -179,8 +179,8 @@ export const zh = {
       workflowButtonDesc: '选择并快速执行预设的工作流任务',
     },
     codex: {
-      name: 'Code X',
-      description: '跳转到 Code X 认证页面',
+      name: 'Novaper',
+      description: '使用 Codex OAuth 认证 Novaper',
     },
   },
   deviceMonitor: {
@@ -263,8 +263,8 @@ export const zh = {
       description: 'vLLM / SGLang 等自建服务',
     },
     codex: {
-      name: 'Code X',
-      description: '跳转到 Code X 认证页面',
+      name: 'Novaper',
+      description: '使用 Codex OAuth 认证 Novaper',
     },
   },
   toasts: {

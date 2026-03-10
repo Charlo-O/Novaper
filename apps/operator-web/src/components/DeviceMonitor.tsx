@@ -27,7 +27,7 @@ import {
   dismissWebCodecsWarning,
 } from '../lib/webcodecs-utils';
 
-// Modified from AutoGLM-GUI upstream for Novaper integration.
+// Adapted for Novaper integration.
 
 interface DeviceMonitorProps {
   deviceId: string;
@@ -379,7 +379,7 @@ export function DeviceMonitor({
                       className="h-7 text-xs"
                       onClick={() =>
                         window.open(
-                          'https://github.com/suyiiyii/AutoGLM-GUI/releases',
+                          'https://github.com/Charlo-O/Novaper/releases',
                           '_blank'
                         )
                       }

@@ -148,7 +148,7 @@ function Footer() {
             className="h-4 bg-slate-200 dark:bg-slate-700"
           />
           <a
-            href="https://github.com/suyiiyii/AutoGLM-GUI"
+            href="https://github.com/Charlo-O/Novaper"
             target="_blank"
             rel="noopener noreferrer"
             className="hover:text-[#1d9bf0] transition-colors flex items-center gap-1"
@@ -159,7 +159,7 @@ function Footer() {
         </div>
         <div className="text-center">
           <a
-            href="https://github.com/suyiiyii/AutoGLM-GUI"
+            href="https://github.com/Charlo-O/Novaper"
             target="_blank"
             rel="noopener noreferrer"
             className="text-slate-500 dark:text-slate-400 hover:text-[#1d9bf0] transition-colors"

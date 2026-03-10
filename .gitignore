@@ -5,6 +5,7 @@ node_modules/
 
 data/auth/*
 !data/auth/.gitkeep
+data/logs/*
 data/live-sessions/*
 !data/live-sessions/.gitkeep
 data/runs/*

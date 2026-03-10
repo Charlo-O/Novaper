@@ -21,7 +21,7 @@ export const en = {
     versionMismatchDetail: 'Frontend: v{frontend}, Backend: v{backend}',
   },
   chat: {
-    welcomeTitle: 'Welcome to AutoGLM',
+    welcomeTitle: 'Welcome to Novaper',
     connectDevice: 'Connect an ADB device to get started',
     configuration: 'Configuration',
     configureApi: 'Configure your API settings to get started',
@@ -264,8 +264,8 @@ export const en = {
       description: 'Self-hosted vLLM / SGLang services',
     },
     codex: {
-      name: 'Code X',
-      description: 'Jump to the Code X authentication page',
+      name: 'Novaper',
+      description: 'Authenticate Novaper with Codex OAuth',
     },
   },
   toasts: {

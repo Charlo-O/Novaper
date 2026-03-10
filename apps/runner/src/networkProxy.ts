@@ -21,7 +21,6 @@ function normalizeProxyUrl(value?: string | null) {
 function resolveProxySetting() {
   const entries: Array<{ source: string; value?: string }> = [
     { source: "NOVAPER_PROXY_URL", value: process.env.NOVAPER_PROXY_URL },
-    { source: "WINAI_PROXY_URL", value: process.env.WINAI_PROXY_URL },
     { source: "HTTPS_PROXY", value: process.env.HTTPS_PROXY },
     { source: "HTTP_PROXY", value: process.env.HTTP_PROXY },
     { source: "ALL_PROXY", value: process.env.ALL_PROXY },
