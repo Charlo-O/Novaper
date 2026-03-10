@@ -6,6 +6,7 @@ import {
   FileText,
   History,
   Clock,
+  Puzzle,
   type LucideIcon,
 } from 'lucide-react';
 import {
@@ -54,6 +55,12 @@ export function NavigationSidebar({ className }: NavigationSidebarProps) {
       icon: Clock,
       label: t.navigation.scheduledTasks || '定时任务',
       path: '/scheduled-tasks',
+    },
+    {
+      id: 'plugins',
+      icon: Puzzle,
+      label: t.navigation.plugins,
+      path: '/plugins',
     },
     {
       id: 'logs',

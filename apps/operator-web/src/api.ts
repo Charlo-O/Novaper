@@ -2372,3 +2372,172 @@ export async function assignDeviceToGroup(
     message: 'Device moved to group.',
   };
 }
+
+// ---------------------------------------------------------------------------
+// Plugin Management: Skill Repos, Skills, MCP Servers
+// ---------------------------------------------------------------------------
+
+export interface SkillRepo {
+  owner: string;
+  name: string;
+  branch: string;
+  enabled: boolean;
+}
+
+export interface DiscoverableSkill {
+  key: string;
+  name: string;
+  description: string;
+  directory: string;
+  readmeUrl: string;
+  repoOwner: string;
+  repoName: string;
+  repoBranch: string;
+}
+
+export interface InstalledSkill {
+  id: string;
+  name: string;
+  description: string;
+  directory: string;
+  content: string;
+  repoOwner?: string;
+  repoName?: string;
+  repoBranch?: string;
+  readmeUrl?: string;
+  enabled: boolean;
+  installedAt: number;
+}
+
+export interface McpServerConfig {
+  id: string;
+  name: string;
+  type: 'stdio' | 'sse' | 'http';
+  command?: string;
+  args?: string[];
+  url?: string;
+  env?: Record<string, string>;
+  enabled: boolean;
+  createdAt: number;
+  updatedAt: number;
+}
+
+// Skill Repos
+
+export async function listSkillRepos(): Promise<SkillRepo[]> {
+  return fetchJson<SkillRepo[]>('/api/plugins/skill-repos');
+}
+
+export async function addSkillRepo(
+  repo: Omit<SkillRepo, 'enabled'> & { enabled?: boolean }
+): Promise<SkillRepo> {
+  return fetchJson<SkillRepo>('/api/plugins/skill-repos', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(repo),
+  });
+}
+
+export async function updateSkillRepo(
+  owner: string,
+  name: string,
+  updates: Partial<Pick<SkillRepo, 'branch' | 'enabled'>>
+): Promise<SkillRepo> {
+  return fetchJson<SkillRepo>(
+    `/api/plugins/skill-repos/${encodeURIComponent(owner)}/${encodeURIComponent(name)}`,
+    {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(updates),
+    }
+  );
+}
+
+export async function deleteSkillRepo(owner: string, name: string): Promise<void> {
+  await fetchJson(
+    `/api/plugins/skill-repos/${encodeURIComponent(owner)}/${encodeURIComponent(name)}`,
+    { method: 'DELETE' }
+  );
+}
+
+// Skill Discovery & Installation
+
+export interface DiscoverSkillsResult {
+  skills: DiscoverableSkill[];
+  errors: string[];
+}
+
+export async function discoverSkills(forceRefresh = false): Promise<DiscoverSkillsResult> {
+  const url = forceRefresh ? '/api/plugins/skills/discover?refresh=1' : '/api/plugins/skills/discover';
+  return fetchJson<DiscoverSkillsResult>(url);
+}
+
+export async function listInstalledSkills(): Promise<InstalledSkill[]> {
+  return fetchJson<InstalledSkill[]>('/api/plugins/skills');
+}
+
+export async function installSkill(skill: DiscoverableSkill): Promise<InstalledSkill> {
+  return fetchJson<InstalledSkill>('/api/plugins/skills/install', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(skill),
+  });
+}
+
+export async function createLocalSkill(input: {
+  name: string;
+  description: string;
+  content: string;
+}): Promise<InstalledSkill> {
+  return fetchJson<InstalledSkill>('/api/plugins/skills/local', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(input),
+  });
+}
+
+export async function updateInstalledSkill(
+  id: string,
+  updates: Partial<Pick<InstalledSkill, 'enabled' | 'name' | 'description' | 'content'>>
+): Promise<InstalledSkill> {
+  return fetchJson<InstalledSkill>(`/api/plugins/skills/${encodeURIComponent(id)}`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(updates),
+  });
+}
+
+export async function uninstallSkill(id: string): Promise<void> {
+  await fetchJson(`/api/plugins/skills/${encodeURIComponent(id)}`, { method: 'DELETE' });
+}
+
+// MCP Servers
+
+export async function listMcpServers(): Promise<McpServerConfig[]> {
+  return fetchJson<McpServerConfig[]>('/api/plugins/mcp-servers');
+}
+
+export async function createMcpServer(
+  input: Omit<McpServerConfig, 'id' | 'createdAt' | 'updatedAt'>
+): Promise<McpServerConfig> {
+  return fetchJson<McpServerConfig>('/api/plugins/mcp-servers', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(input),
+  });
+}
+
+export async function updateMcpServer(
+  id: string,
+  updates: Partial<Omit<McpServerConfig, 'id' | 'createdAt'>>
+): Promise<McpServerConfig> {
+  return fetchJson<McpServerConfig>(`/api/plugins/mcp-servers/${id}`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(updates),
+  });
+}
+
+export async function deleteMcpServer(id: string): Promise<void> {
+  await fetchJson(`/api/plugins/mcp-servers/${id}`, { method: 'DELETE' });
+}

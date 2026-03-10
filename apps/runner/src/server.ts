@@ -17,6 +17,7 @@ import { LogCollector } from "./logCollector.js";
 import { MemoryManager } from "../../../packages/memory/src/memoryManager.js";
 import { FrameStreamer } from "../../../packages/runner-core/src/videoObserver.js";
 import { BrowserSessionManager } from "../../../packages/browser-runtime/src/browserSessionManager.js";
+import { PluginStore } from "./pluginStore.js";
 
 function normalizeRequestedProvider(input: unknown) {
   return input === "api-key" || input === "codex-oauth" ? input : undefined;
@@ -66,6 +67,7 @@ export async function createServer(config: {
   const sidecar = new DesktopSidecar();
   const authService = new AuthService(config.rootDir, config.openAIApiKey);
   const browserSessionManager = new BrowserSessionManager();
+  const pluginStore = new PluginStore(config.rootDir);
   const scenarios = await loadScenarios(path.join(config.rootDir, "scenarios"));
   const scenarioMap = new Map(scenarios.map((scenario) => [scenario.manifest.id, scenario]));
 
@@ -522,6 +524,10 @@ export async function createServer(config: {
             payload: { summary: completedSummaries, plan: formatPlan(plan) },
           });
         } else if (agentType === "cli") {
+          // Load enabled skills for injection into system prompt
+          const enabledSkills = await pluginStore.getEnabledSkills();
+          const skillsForAgent = enabledSkills.map((s) => ({ name: s.name, content: s.content }));
+
           const result = await drivePiAgent({
             instruction,
             client: auth.client,
@@ -531,6 +537,7 @@ export async function createServer(config: {
               await liveStore.appendEvent(updated.id, event);
             },
             shouldStop: () => Boolean(liveStore.getSession(updated.id)?.stopRequested),
+            skills: skillsForAgent.length > 0 ? skillsForAgent : undefined,
           });
 
           await liveStore.updateSession(updated.id, {
@@ -857,6 +864,156 @@ export async function createServer(config: {
     }
 
     response.status(404).json({ error: "Record not found." });
+  });
+
+  // ─── Plugin Management ─────────────────────────────────────────────
+  // ---- Plugin Management: Skill Repos ----
+
+  app.get("/api/plugins/skill-repos", async (_request, response) => {
+    response.json(await pluginStore.listRepos());
+  });
+
+  app.post("/api/plugins/skill-repos", async (request, response) => {
+    const { owner, name, branch } = request.body ?? {};
+    if (!owner || !name) {
+      response.status(400).json({ error: "owner and name are required." });
+      return;
+    }
+    try {
+      const repo = await pluginStore.addRepo({
+        owner: String(owner),
+        name: String(name),
+        branch: String(branch || "main"),
+        enabled: true,
+      });
+      response.status(201).json(repo);
+    } catch (error) {
+      response.status(409).json({ error: error instanceof Error ? error.message : String(error) });
+    }
+  });
+
+  app.put("/api/plugins/skill-repos/:owner/:name", async (request, response) => {
+    const updated = await pluginStore.updateRepo(request.params.owner, request.params.name, request.body ?? {});
+    if (!updated) {
+      response.status(404).json({ error: "Repo not found." });
+      return;
+    }
+    response.json(updated);
+  });
+
+  app.delete("/api/plugins/skill-repos/:owner/:name", async (request, response) => {
+    const deleted = await pluginStore.deleteRepo(request.params.owner, request.params.name);
+    if (!deleted) {
+      response.status(404).json({ error: "Repo not found." });
+      return;
+    }
+    response.json({ ok: true });
+  });
+
+  // ---- Plugin Management: Skill Discovery & Installation ----
+
+  app.get("/api/plugins/skills/discover", async (request, response) => {
+    try {
+      const forceRefresh = request.query.refresh === "1";
+      const result = await pluginStore.discoverSkills(forceRefresh);
+      response.json(result);
+    } catch (error) {
+      response.status(500).json({ skills: [], errors: [error instanceof Error ? error.message : String(error)] });
+    }
+  });
+
+  app.get("/api/plugins/skills", async (_request, response) => {
+    response.json(await pluginStore.listInstalledSkills());
+  });
+
+  app.post("/api/plugins/skills/install", async (request, response) => {
+    const skill = request.body;
+    if (!skill?.key || !skill?.readmeUrl) {
+      response.status(400).json({ error: "Invalid skill data." });
+      return;
+    }
+    try {
+      const installed = await pluginStore.installSkill(skill);
+      response.status(201).json(installed);
+    } catch (error) {
+      response.status(409).json({ error: error instanceof Error ? error.message : String(error) });
+    }
+  });
+
+  app.post("/api/plugins/skills/local", async (request, response) => {
+    const { name, description, content } = request.body ?? {};
+    if (!name || !content) {
+      response.status(400).json({ error: "name and content are required." });
+      return;
+    }
+    const skill = await pluginStore.createLocalSkill({
+      name: String(name),
+      description: String(description ?? ""),
+      content: String(content),
+    });
+    response.status(201).json(skill);
+  });
+
+  app.put("/api/plugins/skills/:id", async (request, response) => {
+    const id = decodeURIComponent(request.params.id);
+    const updated = await pluginStore.updateInstalledSkill(id, request.body ?? {});
+    if (!updated) {
+      response.status(404).json({ error: "Skill not found." });
+      return;
+    }
+    response.json(updated);
+  });
+
+  app.delete("/api/plugins/skills/:id", async (request, response) => {
+    const id = decodeURIComponent(request.params.id);
+    const deleted = await pluginStore.uninstallSkill(id);
+    if (!deleted) {
+      response.status(404).json({ error: "Skill not found." });
+      return;
+    }
+    response.json({ ok: true });
+  });
+
+  // ---- Plugin Management: MCP Servers ----
+
+  app.get("/api/plugins/mcp-servers", async (_request, response) => {
+    response.json(await pluginStore.listMcpServers());
+  });
+
+  app.post("/api/plugins/mcp-servers", async (request, response) => {
+    const { name, type, command, args, url, env, enabled } = request.body ?? {};
+    if (!name || !type) {
+      response.status(400).json({ error: "name and type are required." });
+      return;
+    }
+    const server = await pluginStore.createMcpServer({
+      name: String(name),
+      type: type as "stdio" | "sse" | "http",
+      command: command ? String(command) : undefined,
+      args: Array.isArray(args) ? args.map(String) : undefined,
+      url: url ? String(url) : undefined,
+      env: env && typeof env === "object" ? env : undefined,
+      enabled: Boolean(enabled ?? true),
+    });
+    response.status(201).json(server);
+  });
+
+  app.put("/api/plugins/mcp-servers/:id", async (request, response) => {
+    const updated = await pluginStore.updateMcpServer(request.params.id, request.body ?? {});
+    if (!updated) {
+      response.status(404).json({ error: "MCP server not found." });
+      return;
+    }
+    response.json(updated);
+  });
+
+  app.delete("/api/plugins/mcp-servers/:id", async (request, response) => {
+    const deleted = await pluginStore.deleteMcpServer(request.params.id);
+    if (!deleted) {
+      response.status(404).json({ error: "MCP server not found." });
+      return;
+    }
+    response.json({ ok: true });
   });
 
   // ─── Catch-all SPA fallback ─────────────────────────────────────────

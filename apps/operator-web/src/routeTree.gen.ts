@@ -11,6 +11,7 @@
 import { Route as rootRouteImport } from './routes/__root'
 import { Route as WorkflowsRouteImport } from './routes/workflows'
 import { Route as ScheduledTasksRouteImport } from './routes/scheduled-tasks'
+import { Route as PluginsRouteImport } from './routes/plugins'
 import { Route as LogsRouteImport } from './routes/logs'
 import { Route as HistoryRouteImport } from './routes/history'
 import { Route as ChatRouteImport } from './routes/chat'
@@ -25,6 +26,11 @@ const WorkflowsRoute = WorkflowsRouteImport.update({
 const ScheduledTasksRoute = ScheduledTasksRouteImport.update({
   id: '/scheduled-tasks',
   path: '/scheduled-tasks',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const PluginsRoute = PluginsRouteImport.update({
+  id: '/plugins',
+  path: '/plugins',
   getParentRoute: () => rootRouteImport,
 } as any)
 const LogsRoute = LogsRouteImport.update({
@@ -59,6 +65,7 @@ export interface FileRoutesByFullPath {
   '/chat': typeof ChatRoute
   '/history': typeof HistoryRoute
   '/logs': typeof LogsRoute
+  '/plugins': typeof PluginsRoute
   '/scheduled-tasks': typeof ScheduledTasksRoute
   '/workflows': typeof WorkflowsRoute
 }
@@ -68,6 +75,7 @@ export interface FileRoutesByTo {
   '/chat': typeof ChatRoute
   '/history': typeof HistoryRoute
   '/logs': typeof LogsRoute
+  '/plugins': typeof PluginsRoute
   '/scheduled-tasks': typeof ScheduledTasksRoute
   '/workflows': typeof WorkflowsRoute
 }
@@ -78,6 +86,7 @@ export interface FileRoutesById {
   '/chat': typeof ChatRoute
   '/history': typeof HistoryRoute
   '/logs': typeof LogsRoute
+  '/plugins': typeof PluginsRoute
   '/scheduled-tasks': typeof ScheduledTasksRoute
   '/workflows': typeof WorkflowsRoute
 }
@@ -89,6 +98,7 @@ export interface FileRouteTypes {
     | '/chat'
     | '/history'
     | '/logs'
+    | '/plugins'
     | '/scheduled-tasks'
     | '/workflows'
   fileRoutesByTo: FileRoutesByTo
@@ -98,6 +108,7 @@ export interface FileRouteTypes {
     | '/chat'
     | '/history'
     | '/logs'
+    | '/plugins'
     | '/scheduled-tasks'
     | '/workflows'
   id:
@@ -107,6 +118,7 @@ export interface FileRouteTypes {
     | '/chat'
     | '/history'
     | '/logs'
+    | '/plugins'
     | '/scheduled-tasks'
     | '/workflows'
   fileRoutesById: FileRoutesById
@@ -117,6 +129,7 @@ export interface RootRouteChildren {
   ChatRoute: typeof ChatRoute
   HistoryRoute: typeof HistoryRoute
   LogsRoute: typeof LogsRoute
+  PluginsRoute: typeof PluginsRoute
   ScheduledTasksRoute: typeof ScheduledTasksRoute
   WorkflowsRoute: typeof WorkflowsRoute
 }
@@ -135,6 +148,13 @@ declare module '@tanstack/react-router' {
       path: '/scheduled-tasks'
       fullPath: '/scheduled-tasks'
       preLoaderRoute: typeof ScheduledTasksRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/plugins': {
+      id: '/plugins'
+      path: '/plugins'
+      fullPath: '/plugins'
+      preLoaderRoute: typeof PluginsRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/logs': {
@@ -181,6 +201,7 @@ const rootRouteChildren: RootRouteChildren = {
   ChatRoute: ChatRoute,
   HistoryRoute: HistoryRoute,
   LogsRoute: LogsRoute,
+  PluginsRoute: PluginsRoute,
   ScheduledTasksRoute: ScheduledTasksRoute,
   WorkflowsRoute: WorkflowsRoute,
 }

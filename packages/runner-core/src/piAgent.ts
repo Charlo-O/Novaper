@@ -28,6 +28,7 @@ export interface DrivePiAgentContext {
   onEvent: (event: DesktopAgentEvent) => Promise<void>;
   shouldStop: () => boolean;
   maxTurns?: number;
+  skills?: Array<{ name: string; content: string }>;
 }
 
 // ---------------------------------------------------------------------------
@@ -44,7 +45,7 @@ const TOOL_DESCRIPTIONS: Record<string, string> = {
   ls: "List directory contents",
 };
 
-function buildSystemPrompt(cwd: string, toolNames: string[], contextFiles: Array<{ path: string; content: string }>): string {
+function buildSystemPrompt(cwd: string, toolNames: string[], contextFiles: Array<{ path: string; content: string }>, skills?: Array<{ name: string; content: string }>): string {
   const now = new Date();
   const dateTime = now.toLocaleString("en-US", {
     weekday: "long",
@@ -106,6 +107,15 @@ ${guidelinesText}`;
     prompt += "Project-specific instructions and guidelines:\n\n";
     for (const { path: filePath, content } of contextFiles) {
       prompt += `## ${filePath}\n\n${content}\n\n`;
+    }
+  }
+
+  // Append active skills
+  if (skills && skills.length > 0) {
+    prompt += "\n\n# Active Skills\n\n";
+    prompt += "The following skill prompts are active and should be incorporated into your behavior:\n\n";
+    for (const skill of skills) {
+      prompt += `## ${skill.name}\n\n${skill.content}\n\n`;
     }
   }
 
@@ -332,7 +342,7 @@ export async function drivePiAgent(context: DrivePiAgentContext): Promise<{ summ
   }
 
   // Build structured system prompt (ported from pi-mono)
-  const systemPrompt = buildSystemPrompt(cwd, toolNames, contextFiles);
+  const systemPrompt = buildSystemPrompt(cwd, toolNames, contextFiles, context.skills);
 
   await context.onEvent({
     type: "status",
