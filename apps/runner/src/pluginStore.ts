@@ -1,6 +1,7 @@
 import { promises as fs } from "node:fs";
 import path from "node:path";
 import crypto from "node:crypto";
+import unzipper from "unzipper";
 import type {
   SkillRepo,
   DiscoverableSkill,
@@ -116,7 +117,8 @@ export class PluginStore {
   }
 
   // =========================================================================
-  // Skill Discovery — scan enabled repos via GitHub API
+  // Skill Discovery — download repo ZIP and scan for SKILL.md files
+  // (matches cc-switch approach: 1 request per repo, no API rate limits)
   // =========================================================================
 
   async discoverSkills(forceRefresh = false): Promise<{ skills: DiscoverableSkill[]; errors: string[] }> {
@@ -128,18 +130,23 @@ export class PluginStore {
 
     const repos = await this.listRepos();
     const enabled = repos.filter((r) => r.enabled);
+
+    console.log(`[PluginStore] Discovering skills from ${enabled.length} enabled repos (ZIP download)...`);
+
+    // Fetch all repos in parallel (like cc-switch)
+    const settled = await Promise.allSettled(enabled.map((repo) => this.discoverFromRepo(repo)));
+
     const results: DiscoverableSkill[] = [];
     const errors: string[] = [];
 
-    console.log(`[PluginStore] Discovering skills from ${enabled.length} enabled repos...`);
-
-    for (const repo of enabled) {
-      try {
-        const skills = await this.discoverFromRepo(repo);
-        console.log(`[PluginStore] ${repo.owner}/${repo.name}: found ${skills.length} skills`);
-        results.push(...skills);
-      } catch (err) {
-        const msg = `${repo.owner}/${repo.name}: ${err instanceof Error ? err.message : String(err)}`;
+    for (let i = 0; i < settled.length; i++) {
+      const outcome = settled[i];
+      const repo = enabled[i];
+      if (outcome.status === "fulfilled") {
+        console.log(`[PluginStore] ${repo.owner}/${repo.name}: found ${outcome.value.length} skills`);
+        results.push(...outcome.value);
+      } else {
+        const msg = `${repo.owner}/${repo.name}: ${outcome.reason instanceof Error ? outcome.reason.message : String(outcome.reason)}`;
         console.error(`[PluginStore] Error discovering:`, msg);
         errors.push(msg);
       }
@@ -151,62 +158,80 @@ export class PluginStore {
   }
 
   private async discoverFromRepo(repo: SkillRepo): Promise<DiscoverableSkill[]> {
-    // Use GitHub API to get the repo tree
-    const treeUrl = `https://api.github.com/repos/${repo.owner}/${repo.name}/git/trees/${repo.branch}?recursive=1`;
-    console.log(`[PluginStore] Fetching tree: ${treeUrl}`);
-    const res = await fetch(treeUrl, {
-      headers: { "Accept": "application/vnd.github.v3+json", "User-Agent": "Novaper" },
-      signal: AbortSignal.timeout(15000),
-    });
-    if (!res.ok) {
-      const body = await res.text().catch(() => "");
-      const errMsg = `GitHub API ${res.status}: ${body.substring(0, 200)}`;
-      console.error(`[PluginStore] Tree API failed for ${repo.owner}/${repo.name}: ${errMsg}`);
-      throw new Error(errMsg);
+    // Try branches in order: specified branch, then fallback to main, then master
+    const branches = [repo.branch];
+    if (repo.branch !== "main") branches.push("main");
+    if (repo.branch !== "master") branches.push("master");
+
+    let zipBuffer: Buffer | null = null;
+    let usedBranch = repo.branch;
+
+    for (const branch of branches) {
+      const zipUrl = `https://github.com/${repo.owner}/${repo.name}/archive/refs/heads/${branch}.zip`;
+      console.log(`[PluginStore] Downloading ZIP: ${zipUrl}`);
+      try {
+        const res = await fetch(zipUrl, {
+          headers: { "User-Agent": "Novaper" },
+          signal: AbortSignal.timeout(60000),
+          redirect: "follow",
+        });
+        if (res.ok) {
+          zipBuffer = Buffer.from(await res.arrayBuffer());
+          usedBranch = branch;
+          console.log(`[PluginStore] ${repo.owner}/${repo.name}: downloaded ${(zipBuffer.length / 1024).toFixed(0)} KB (branch: ${branch})`);
+          break;
+        }
+        console.warn(`[PluginStore] ${repo.owner}/${repo.name} branch "${branch}": HTTP ${res.status}`);
+      } catch (err) {
+        console.warn(`[PluginStore] ${repo.owner}/${repo.name} branch "${branch}" fetch error:`, err instanceof Error ? err.message : err);
+      }
     }
 
-    const data = (await res.json()) as { tree?: Array<{ path: string; type: string }> };
-    if (!data.tree) {
-      console.error(`[PluginStore] No tree in response for ${repo.owner}/${repo.name}`);
-      return [];
+    if (!zipBuffer) {
+      throw new Error(`Failed to download any branch (tried: ${branches.join(", ")})`);
     }
 
-    // Find all SKILL.md files
-    const skillMdPaths = data.tree
-      .filter((entry) => entry.type === "blob" && entry.path.endsWith("SKILL.md"))
-      .map((entry) => entry.path);
-
-    console.log(`[PluginStore] ${repo.owner}/${repo.name}: found ${skillMdPaths.length} SKILL.md files`);
-
+    // Parse ZIP in memory and find SKILL.md files
+    const directory = await unzipper.Open.buffer(zipBuffer);
     const skills: DiscoverableSkill[] = [];
 
-    for (const mdPath of skillMdPaths) {
+    // ZIP entries have a root folder like "repo-name-branch/"
+    const skillFiles = directory.files.filter(
+      (f) => !f.type || f.type === "File" ? f.path.endsWith("/SKILL.md") || f.path === "SKILL.md" : false
+    );
+
+    console.log(`[PluginStore] ${repo.owner}/${repo.name}: found ${skillFiles.length} SKILL.md files in ZIP`);
+
+    for (const file of skillFiles) {
       try {
-        const rawUrl = `https://raw.githubusercontent.com/${repo.owner}/${repo.name}/${repo.branch}/${mdPath}`;
-        const rawRes = await fetch(rawUrl, { headers: { "User-Agent": "Novaper" }, signal: AbortSignal.timeout(10000) });
-        if (!rawRes.ok) {
-          console.warn(`[PluginStore] Failed to fetch ${rawUrl}: ${rawRes.status}`);
-          continue;
+        const content = (await file.buffer()).toString("utf-8");
+        const { name, description } = parseSkillMdFrontMatter(content);
+
+        // Strip the ZIP root folder prefix (e.g. "skills-main/some/path/SKILL.md" → "some/path")
+        let relativePath = file.path;
+        const slashIdx = relativePath.indexOf("/");
+        if (slashIdx !== -1) {
+          relativePath = relativePath.substring(slashIdx + 1);
         }
+        // Get directory (parent of SKILL.md)
+        const skillDir = relativePath.includes("/")
+          ? relativePath.substring(0, relativePath.lastIndexOf("/"))
+          : ".";
 
-        const rawText = await rawRes.text();
-        const { name, description } = parseSkillMdFrontMatter(rawText);
-
-        // directory = parent path of SKILL.md (or repo root)
-        const directory = mdPath.includes("/") ? mdPath.substring(0, mdPath.lastIndexOf("/")) : ".";
+        const rawUrl = `https://raw.githubusercontent.com/${repo.owner}/${repo.name}/${usedBranch}/${relativePath}`;
 
         skills.push({
-          key: `${repo.owner}/${repo.name}:${directory}`,
-          name: name || directory,
+          key: `${repo.owner}/${repo.name}:${skillDir}`,
+          name: name || skillDir,
           description: description || "",
-          directory,
+          directory: skillDir,
           readmeUrl: rawUrl,
           repoOwner: repo.owner,
           repoName: repo.name,
-          repoBranch: repo.branch,
+          repoBranch: usedBranch,
         });
       } catch (err) {
-        console.error(`[PluginStore] Error fetching skill ${mdPath}:`, err);
+        console.error(`[PluginStore] Error parsing ${file.path}:`, err);
       }
     }
 
