@@ -65,4 +65,27 @@ export class DesktopSidecar {
   setDisplayProfile(args: { width: number; height: number; scale: number }): Promise<Record<string, unknown>> {
     return invokePowerShell("set_display_profile", args);
   }
+
+  // ─── Screen Recording (Phase 3) ────────────────────────────────────
+
+  startScreenRecording(opts: { fps?: number; outputPath: string }): Promise<{ recordingId: string }> {
+    return invokePowerShell("start_screen_recording", opts);
+  }
+
+  stopScreenRecording(recordingId: string): Promise<{ filePath: string; duration: number }> {
+    return invokePowerShell("stop_screen_recording", { recordingId });
+  }
+
+  /** Capture N frames at a given interval. Returns array of base64 JPEG images. */
+  async captureFrameSequence(count: number, intervalMs: number): Promise<Array<{ base64: string; timestamp: number }>> {
+    const frames: Array<{ base64: string; timestamp: number }> = [];
+    for (let i = 0; i < count; i++) {
+      const screenshot = await this.captureScreenshot();
+      frames.push({ base64: screenshot.imageBase64, timestamp: Date.now() });
+      if (i < count - 1) {
+        await new Promise((resolve) => setTimeout(resolve, intervalMs));
+      }
+    }
+    return frames;
+  }
 }

@@ -15,6 +15,56 @@ export class RunStore {
 
   constructor(private readonly rootDir: string) {}
 
+  /** Scan data/runs/{id}/run.json on startup and restore into memory Map */
+  async loadFromDisk(): Promise<void> {
+    let entries: string[];
+    try {
+      entries = await fs.readdir(this.rootDir);
+    } catch {
+      return; // directory doesn't exist yet
+    }
+
+    for (const entry of entries) {
+      const runPath = path.join(this.rootDir, entry, "run.json");
+      try {
+        const raw = await fs.readFile(runPath, "utf8");
+        const run: RunRecord = JSON.parse(raw);
+        this.runs.set(run.id, run);
+
+        // Restore events from events.jsonl
+        const eventsPath = path.join(this.rootDir, entry, "events.jsonl");
+        const events: RunEvent[] = [];
+        try {
+          const eventsRaw = await fs.readFile(eventsPath, "utf8");
+          for (const line of eventsRaw.split("\n")) {
+            if (line.trim()) {
+              events.push(JSON.parse(line));
+            }
+          }
+        } catch {
+          // no events file yet
+        }
+        this.history.set(run.id, events);
+      } catch {
+        // skip malformed entries
+      }
+    }
+  }
+
+  async deleteRun(runId: string): Promise<boolean> {
+    const run = this.runs.get(runId);
+    if (!run) return false;
+    this.runs.delete(runId);
+    this.history.delete(runId);
+    this.streams.delete(runId);
+    try {
+      await fs.rm(run.replayDir, { recursive: true, force: true });
+    } catch {
+      // best effort
+    }
+    return true;
+  }
+
   async createRun(input: {
     scenarioId: string;
     machineId: string;

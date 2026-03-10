@@ -35,6 +35,8 @@ interface DeviceMonitorProps {
   connectionType?: string;
   isVisible?: boolean;
   className?: string;
+  /** Live session ID for SSE frame streaming */
+  liveSessionId?: string;
 }
 
 export function DeviceMonitor({
@@ -43,6 +45,7 @@ export function DeviceMonitor({
   connectionType,
   isVisible = true,
   className = '',
+  liveSessionId,
 }: DeviceMonitorProps) {
   const t = useTranslation();
 
@@ -51,8 +54,10 @@ export function DeviceMonitor({
   const [useVideoStream, setUseVideoStream] = useState(!isRemoteDevice);
   const [videoStreamFailed, setVideoStreamFailed] = useState(true);
   const [displayMode, setDisplayMode] = useState<
-    'auto' | 'video' | 'screenshot'
+    'auto' | 'video' | 'screenshot' | 'live'
   >(isRemoteDevice ? 'screenshot' : 'auto');
+  const liveCanvasRef = useRef<HTMLCanvasElement>(null);
+  const liveEventSourceRef = useRef<EventSource | null>(null);
   const [feedbackMessage, setFeedbackMessage] = useState<string | null>(null);
   const [feedbackType, setFeedbackType] = useState<
     'tap' | 'swipe' | 'error' | 'success'
@@ -138,6 +143,48 @@ export function DeviceMonitor({
     setDisplayMode(mode);
   };
 
+  // Live frame stream via SSE
+  useEffect(() => {
+    if (displayMode !== 'live' || !liveSessionId || !isVisible) {
+      liveEventSourceRef.current?.close();
+      liveEventSourceRef.current = null;
+      return;
+    }
+
+    const es = new EventSource(`/api/live-sessions/${liveSessionId}/screen-stream`);
+    liveEventSourceRef.current = es;
+
+    es.onmessage = (event) => {
+      try {
+        const data = JSON.parse(event.data) as {
+          image: string;
+          width: number;
+          height: number;
+        };
+        const canvas = liveCanvasRef.current;
+        if (!canvas) return;
+
+        const ctx = canvas.getContext('2d');
+        if (!ctx) return;
+
+        const img = new Image();
+        img.onload = () => {
+          canvas.width = data.width;
+          canvas.height = data.height;
+          ctx.drawImage(img, 0, 0);
+        };
+        img.src = `data:image/png;base64,${data.image}`;
+      } catch {
+        // ignore
+      }
+    };
+
+    return () => {
+      es.close();
+      liveEventSourceRef.current = null;
+    };
+  }, [displayMode, liveSessionId, isVisible]);
+
   useEffect(() => {
     return () => {
       if (feedbackTimeoutRef.current) {
@@ -148,6 +195,9 @@ export function DeviceMonitor({
       }
       if (videoStreamRef.current) {
         videoStreamRef.current.close();
+      }
+      if (liveEventSourceRef.current) {
+        liveEventSourceRef.current.close();
       }
     };
   }, []);
@@ -283,6 +333,21 @@ export function DeviceMonitor({
                 <ImageIcon className="w-3 h-3 mr-1" />
                 {t.devicePanel?.image || 'Image'}
               </Button>
+              {liveSessionId && (
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  onClick={() => toggleDisplayMode('live')}
+                  className={`h-7 px-3 text-xs rounded-lg transition-colors ${
+                    displayMode === 'live'
+                      ? 'bg-primary text-primary-foreground'
+                      : 'text-foreground hover:bg-accent hover:text-accent-foreground'
+                  }`}
+                >
+                  <MonitorPlay className="w-3 h-3 mr-1" />
+                  Live
+                </Button>
+              )}
             </div>
 
             {/* Width controls - aligned with display mode controls */}
@@ -316,6 +381,12 @@ export function DeviceMonitor({
           className="bg-white/90 text-slate-700 border border-slate-200 dark:bg-slate-900/90 dark:text-slate-300 dark:border-slate-700"
         >
           {displayMode === 'auto' && (t.devicePanel?.auto || 'Auto')}
+          {displayMode === 'live' && (
+            <>
+              <MonitorPlay className="w-3 h-3 mr-1" />
+              Live
+            </>
+          )}
           {displayMode === 'video' && (
             <>
               <MonitorPlay className="w-3 h-3 mr-1" />
@@ -342,8 +413,16 @@ export function DeviceMonitor({
         </div>
       )}
 
-      {/* Video stream */}
-      {displayMode === 'video' ||
+      {/* Live frame stream via SSE */}
+      {displayMode === 'live' && liveSessionId ? (
+        <div className="w-full h-full flex items-center justify-center bg-muted/30 min-h-0">
+          <canvas
+            ref={liveCanvasRef}
+            className="max-w-full max-h-full object-contain"
+          />
+        </div>
+      ) : /* Video stream */
+      displayMode === 'video' ||
       (displayMode === 'auto' && useVideoStream && !videoStreamFailed) ? (
         <>
           {/* WebCodecs unavailability warning banner */}

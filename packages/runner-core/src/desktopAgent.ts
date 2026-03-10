@@ -5,6 +5,7 @@ import type { DesktopSidecar } from "../../desktop-runtime/src/sidecar.js";
 import type { ComputerAction } from "../../desktop-runtime/src/types.js";
 import { createToolRegistry } from "./toolRegistry.js";
 import type { ResponsesClient } from "./responsesClient.js";
+import type { MemoryManager } from "../../memory/src/memoryManager.js";
 
 export interface DesktopAgentEvent {
   type: "status" | "log" | "tool_call" | "tool_result" | "computer_action" | "screenshot" | "error" | "message";
@@ -25,6 +26,8 @@ interface DriveDesktopAgentContext {
   maxTurns?: number;
   onEvent: (event: DesktopAgentEvent) => Promise<void>;
   shouldStop?: () => boolean;
+  memoryManager?: MemoryManager;
+  sessionId?: string;
 }
 
 interface VisualObservation {
@@ -147,9 +150,31 @@ export async function driveDesktopAgent(context: DriveDesktopAgentContext): Prom
   let lastExecutedToolSignature: { name: string; signature: string } | undefined;
   let executedToolCallCount = 0;
   let remindedToolUse = false;
+  const collectedToolCalls: Array<{ name: string; args: unknown; result: unknown }> = [];
+
+  // Build memory-enhanced developer prompt
+  let enhancedPrompt = context.developerPrompt;
+  if (context.memoryManager && context.sessionId) {
+    try {
+      const windows = await context.sidecar.listWindows();
+      const foreground = windows.find((w) => w.isForeground);
+      const memoryContext = await context.memoryManager.buildMemoryContext(
+        context.userContent,
+        windows,
+        foreground,
+        context.sessionId,
+      );
+      if (memoryContext) {
+        enhancedPrompt = `${context.developerPrompt}\n${memoryContext}`;
+      }
+    } catch {
+      // Memory building is best-effort
+    }
+  }
+
   const initialInput: ResponseInputItem[] = [];
   if (!context.previousResponseId) {
-    initialInput.push({ role: "developer", content: context.developerPrompt });
+    initialInput.push({ role: "developer", content: enhancedPrompt });
   }
 
   if (visualGroundingEnabled) {
@@ -208,6 +233,20 @@ export async function driveDesktopAgent(context: DriveDesktopAgentContext): Prom
         continue;
       }
 
+      // Record turn results in memory
+      if (context.memoryManager && context.sessionId) {
+        try {
+          await context.memoryManager.recordTurnResult(
+            context.sessionId,
+            context.userContent,
+            collectedToolCalls,
+            outputText || "",
+          );
+        } catch {
+          // Memory recording is best-effort
+        }
+      }
+
       return {
         summary: outputText || "Model finished without additional tool calls.",
         responseId: response.id,
@@ -258,6 +297,8 @@ export async function driveDesktopAgent(context: DriveDesktopAgentContext): Prom
         message: `Function result: ${call.name}`,
         payload: result,
       });
+
+      collectedToolCalls.push({ name: call.name, args, result });
 
       nextInput.push({
         type: "function_call_output",

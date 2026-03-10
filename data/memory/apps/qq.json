@@ -1,0 +1,17 @@
+{
+  "appName": "QQ",
+  "processNames": [
+    "QQ.exe",
+    "QQScLauncher.exe"
+  ],
+  "windowTitlePatterns": [
+    "QQ"
+  ],
+  "knownBehaviors": [
+    "Custom UI framework, UIA is very unreliable",
+    "Prefer vision-based interaction"
+  ],
+  "preferredInteraction": "vision",
+  "complexity": "complex",
+  "memories": []
+}

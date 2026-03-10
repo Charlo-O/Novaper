@@ -4,13 +4,20 @@ import path from "node:path";
 import type { Response } from "express";
 import type { AuthProvider } from "../../../packages/replay-schema/src/types.js";
 
+export interface PendingConfirmation {
+  message: string;
+  options?: string[];
+  resolveWith?: string;
+  requestedAt: string;
+}
+
 export interface LiveSession {
   id: string;
   createdAt: string;
   updatedAt: string;
   model: string;
   authProvider?: AuthProvider;
-  status: "idle" | "observing" | "acting" | "error";
+  status: "idle" | "observing" | "acting" | "error" | "waiting_confirmation";
   artifactDir: string;
   previousResponseId?: string;
   latestScreenshotUrl?: string;
@@ -18,6 +25,8 @@ export interface LiveSession {
   latestSummary?: string;
   stopRequested?: boolean;
   error?: string;
+  pendingConfirmation?: PendingConfirmation;
+  executionLock?: boolean;
 }
 
 export interface LiveEvent {
@@ -40,6 +49,56 @@ export class LiveSessionStore {
   private readonly streams = new Map<string, Set<Response>>();
 
   constructor(private readonly rootDir: string) {}
+
+  /** Scan data/live-sessions/{id}/session.json on startup and restore into memory Map */
+  async loadFromDisk(): Promise<void> {
+    let entries: string[];
+    try {
+      entries = await fs.readdir(this.rootDir);
+    } catch {
+      return; // directory doesn't exist yet
+    }
+
+    for (const entry of entries) {
+      const sessionPath = path.join(this.rootDir, entry, "session.json");
+      try {
+        const raw = await fs.readFile(sessionPath, "utf8");
+        const session: LiveSession = JSON.parse(raw);
+        this.sessions.set(session.id, session);
+
+        // Restore events from events.jsonl
+        const eventsPath = path.join(this.rootDir, entry, "events.jsonl");
+        const events: LiveEvent[] = [];
+        try {
+          const eventsRaw = await fs.readFile(eventsPath, "utf8");
+          for (const line of eventsRaw.split("\n")) {
+            if (line.trim()) {
+              events.push(JSON.parse(line));
+            }
+          }
+        } catch {
+          // no events file yet
+        }
+        this.history.set(session.id, events);
+      } catch {
+        // skip malformed entries
+      }
+    }
+  }
+
+  async deleteSession(sessionId: string): Promise<boolean> {
+    const session = this.sessions.get(sessionId);
+    if (!session) return false;
+    this.sessions.delete(sessionId);
+    this.history.delete(sessionId);
+    this.streams.delete(sessionId);
+    try {
+      await fs.rm(session.artifactDir, { recursive: true, force: true });
+    } catch {
+      // best effort
+    }
+    return true;
+  }
 
   async createSession(model: string, authProvider?: AuthProvider): Promise<LiveSession> {
     const id = randomUUID();

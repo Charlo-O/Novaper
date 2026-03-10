@@ -1,0 +1,17 @@
+{
+  "appName": "Microsoft Edge",
+  "processNames": [
+    "msedge.exe"
+  ],
+  "windowTitlePatterns": [
+    "Microsoft Edge",
+    "Edge"
+  ],
+  "knownBehaviors": [
+    "Chromium-based, good UIA support",
+    "Similar to Chrome interaction patterns"
+  ],
+  "preferredInteraction": "hybrid",
+  "complexity": "moderate",
+  "memories": []
+}

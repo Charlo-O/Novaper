@@ -1973,49 +1973,135 @@ export function sendLayeredMessageStream(
   };
 }
 
+/** Server-side history item from unified /api/history endpoint */
+export interface ServerHistoryItem {
+  id: string;
+  type: 'live-session' | 'run';
+  createdAt: string;
+  updatedAt: string;
+  status: string;
+  instruction?: string;
+  summary?: string;
+  error?: string;
+  hasToolEvents: boolean;
+}
+
+export interface ServerHistoryListResponse {
+  items: ServerHistoryItem[];
+  total: number;
+  limit: number;
+  offset: number;
+}
+
+export interface ServerHistoryDetail {
+  type: 'live-session' | 'run';
+  record: Record<string, unknown>;
+  events: Array<Record<string, unknown>>;
+}
+
 export async function listHistory(
-  serialno: string,
+  _serialno?: string,
   limit: number = 50,
   offset: number = 0
 ): Promise<HistoryListResponse> {
-  const allRecords = readStoredHistory()[serialno] || [];
-  const records = allRecords.slice(offset, offset + limit);
-  return {
-    records,
-    total: allRecords.length,
-    limit,
-    offset,
-  };
+  const data = await fetchJson<ServerHistoryListResponse>(
+    `/api/history?limit=${limit}&offset=${offset}`
+  );
+
+  // Map server items to the HistoryRecordResponse shape expected by the frontend
+  const records: HistoryRecordResponse[] = data.items.map((item) => {
+    const startTime = item.createdAt;
+    const endTime = item.updatedAt;
+    const durationMs =
+      new Date(endTime).getTime() - new Date(startTime).getTime();
+    const isError = item.status === 'error' || item.status === 'Failed';
+    const isPlannedOnly = !!item.instruction && !item.hasToolEvents;
+
+    return {
+      id: item.id,
+      task_text: item.instruction || (isPlannedOnly ? '计划任务（未执行）' : item.summary || item.type),
+      final_message: item.error || item.summary || item.status,
+      success: !isError,
+      steps: 0,
+      start_time: startTime,
+      end_time: endTime,
+      duration_ms: Math.max(durationMs, 0),
+      source: item.type === 'run' ? 'layered' as const : 'chat' as const,
+      source_detail: item.type,
+      error_message: item.error || null,
+      messages: [],
+    };
+  });
+
+  return { records, total: data.total, limit: data.limit, offset: data.offset };
 }
 
 export async function getHistoryRecord(
-  serialno: string,
+  _serialno: string,
   recordId: string
 ): Promise<HistoryRecordResponse> {
-  const record = (readStoredHistory()[serialno] || []).find(
-    item => item.id === recordId
+  const data = await fetchJson<ServerHistoryDetail>(
+    `/api/history/${recordId}`
   );
-  if (!record) {
-    throw new Error('History record not found.');
-  }
-  return record;
+
+  const events = data.events || [];
+  const record = data.record as Record<string, string | undefined>;
+  const startTime = record.createdAt || new Date().toISOString();
+  const endTime = record.updatedAt || startTime;
+  const durationMs =
+    new Date(endTime).getTime() - new Date(startTime).getTime();
+  const isError = record.status === 'error' || record.status === 'Failed';
+
+  // Map events to messages
+  const messages: MessageRecordResponse[] = events.map((ev, idx) => ({
+    role: (ev.type === 'message' ? 'user' : 'assistant') as 'user' | 'assistant',
+    content: String(ev.message || ''),
+    step: ev.type === 'tool_call' || ev.type === 'computer_action' ? idx : null,
+    thinking: null,
+    action: ev.type === 'tool_call' || ev.type === 'computer_action' ? (ev.payload as Record<string, unknown> || null) : null,
+    screenshot: null,
+    timestamp: String(ev.at || ''),
+  }));
+
+  return {
+    id: recordId,
+    task_text: record.latestInstruction || record.summary || data.type,
+    final_message: record.error || record.latestSummary || record.summary || record.status || '',
+    success: !isError,
+    steps: events.filter((e) => e.type === 'tool_call' || e.type === 'computer_action').length,
+    start_time: startTime,
+    end_time: endTime,
+    duration_ms: Math.max(durationMs, 0),
+    source: data.type === 'run' ? 'layered' : 'chat',
+    source_detail: data.type,
+    error_message: isError ? (record.error || null) : null,
+    messages,
+  };
 }
 
 export async function deleteHistoryRecord(
-  serialno: string,
+  _serialno: string,
   recordId: string
 ): Promise<void> {
-  const history = readStoredHistory();
-  history[serialno] = (history[serialno] || []).filter(
-    record => record.id !== recordId
-  );
-  writeStoredHistory(history);
+  await fetchJson<{ deleted: boolean }>(`/api/history/${recordId}`, {
+    method: 'DELETE',
+  });
 }
 
-export async function clearHistory(serialno: string): Promise<void> {
-  const history = readStoredHistory();
-  history[serialno] = [];
-  writeStoredHistory(history);
+export async function clearHistory(_serialno?: string): Promise<void> {
+  // Clear all by fetching all IDs and deleting one by one
+  const data = await fetchJson<ServerHistoryListResponse>(
+    `/api/history?limit=1000&offset=0`
+  );
+  for (const item of data.items) {
+    try {
+      await fetchJson<{ deleted: boolean }>(`/api/history/${item.id}`, {
+        method: 'DELETE',
+      });
+    } catch {
+      // best effort
+    }
+  }
 }
 
 export async function listScheduledTasks(): Promise<ScheduledTaskListResponse> {

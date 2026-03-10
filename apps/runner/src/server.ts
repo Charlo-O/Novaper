@@ -9,9 +9,13 @@ import { executeRun } from "../../../packages/runner-core/src/runExecutor.js";
 import { DesktopSidecar } from "../../../packages/desktop-runtime/src/sidecar.js";
 import { driveDesktopAgent } from "../../../packages/runner-core/src/desktopAgent.js";
 import { drivePiAgent } from "../../../packages/runner-core/src/piAgent.js";
-import { classifyInstruction } from "../../../packages/runner-core/src/instructionClassifier.js";
+import { classifyInstruction, type AgentRoute } from "../../../packages/runner-core/src/instructionClassifier.js";
+import { planTasks, getNextTask, updateTaskStatus, isPlanComplete, formatPlan } from "../../../packages/runner-core/src/taskPlanner.js";
 import { AuthService } from "./authService.js";
 import { getProxyStatus } from "./networkProxy.js";
+import { LogCollector } from "./logCollector.js";
+import { MemoryManager } from "../../../packages/memory/src/memoryManager.js";
+import { FrameStreamer } from "../../../packages/runner-core/src/videoObserver.js";
 
 function normalizeRequestedProvider(input: unknown) {
   return input === "api-key" || input === "codex-oauth" ? input : undefined;
@@ -61,6 +65,17 @@ export async function createServer(config: {
   const authService = new AuthService(config.rootDir, config.openAIApiKey);
   const scenarios = await loadScenarios(path.join(config.rootDir, "scenarios"));
   const scenarioMap = new Map(scenarios.map((scenario) => [scenario.manifest.id, scenario]));
+
+  // Initialize log collector
+  const logCollector = new LogCollector(path.join(config.rootDir, "data", "logs"));
+  await logCollector.init();
+
+  // Initialize memory manager
+  const memoryManager = new MemoryManager(path.join(config.rootDir, "data", "memory"));
+  await memoryManager.init();
+
+  // Restore persisted data from disk on startup
+  await Promise.all([store.loadFromDisk(), liveStore.loadFromDisk()]);
 
   app.use(express.json({ limit: "1mb" }));
   app.use(express.static(operatorWebDir));
@@ -345,8 +360,13 @@ export async function createServer(config: {
       return;
     }
 
-    if (session.status === "acting") {
+    if (session.status === "acting" || session.executionLock) {
       response.status(409).json({ error: "Live session is already executing another command." });
+      return;
+    }
+
+    if (session.status === "waiting_confirmation") {
+      response.status(409).json({ error: "Waiting for user confirmation on a previous action." });
       return;
     }
 
@@ -390,7 +410,7 @@ export async function createServer(config: {
     void (async () => {
       try {
         // Classify instruction to determine agent routing
-        let agentType: "cli" | "desktop" = "desktop";
+        let agentType: AgentRoute = "desktop";
         try {
           agentType = await classifyInstruction(instruction, auth.client, updated.model);
         } catch {
@@ -404,7 +424,100 @@ export async function createServer(config: {
           payload: { agentType },
         });
 
-        if (agentType === "cli") {
+        if (agentType === "planner") {
+          // Complex task: decompose into subtasks
+          const windows = await sidecar.listWindows();
+          let memoryCtx = "";
+          try {
+            memoryCtx = await memoryManager.buildMemoryContext(instruction, windows, undefined, updated.id);
+          } catch { /* best effort */ }
+
+          const plan = await planTasks(instruction, { windows, memory: memoryCtx }, auth.client, updated.model);
+
+          await liveStore.appendEvent(updated.id, {
+            type: "log",
+            level: "info",
+            message: `Task plan created with ${plan.tasks.length} subtasks.`,
+            payload: { plan: formatPlan(plan) },
+          });
+
+          // Execute subtasks sequentially
+          while (!isPlanComplete(plan)) {
+            if (liveStore.getSession(updated.id)?.stopRequested) {
+              throw new Error("Live session stopped by operator.");
+            }
+
+            const task = getNextTask(plan);
+            if (!task) break;
+
+            updateTaskStatus(plan, task.id, "in_progress");
+            await liveStore.appendEvent(updated.id, {
+              type: "log",
+              level: "info",
+              message: `Starting subtask: ${task.title}`,
+              payload: { taskId: task.id, plan: formatPlan(plan) },
+            });
+
+            try {
+              if (task.agentType === "cli") {
+                const subResult = await drivePiAgent({
+                  instruction: task.description,
+                  client: auth.client,
+                  model: updated.model,
+                  artifactDir: updated.artifactDir,
+                  onEvent: async (event) => {
+                    await liveStore.appendEvent(updated.id, event);
+                  },
+                  shouldStop: () => Boolean(liveStore.getSession(updated.id)?.stopRequested),
+                });
+                updateTaskStatus(plan, task.id, "completed", subResult.summary);
+              } else {
+                await memoryManager.initSession(updated.id);
+                const subResult = await driveDesktopAgent({
+                  client: auth.client,
+                  model: updated.model,
+                  developerPrompt: buildLiveDeveloperPrompt(),
+                  userContent: task.description,
+                  previousResponseId: auth.authProvider === "api-key" ? updated.previousResponseId : undefined,
+                  sidecar,
+                  artifactDir: updated.artifactDir,
+                  screenshotBaseUrl: `/artifacts/live/${updated.id}`,
+                  onEvent: async (event) => {
+                    await liveStore.appendEvent(updated.id, event);
+                  },
+                  shouldStop: () => Boolean(liveStore.getSession(updated.id)?.stopRequested),
+                  maxTurns: 20,
+                  memoryManager,
+                  sessionId: updated.id,
+                });
+                updateTaskStatus(plan, task.id, "completed", subResult.summary);
+
+                await liveStore.updateSession(updated.id, {
+                  previousResponseId: auth.authProvider === "api-key" ? subResult.responseId : undefined,
+                  latestScreenshotUrl: subResult.latestScreenshotUrl ?? updated.latestScreenshotUrl,
+                });
+              }
+            } catch (taskError) {
+              updateTaskStatus(plan, task.id, "failed", taskError instanceof Error ? taskError.message : String(taskError));
+            }
+          }
+
+          const completedSummaries = plan.tasks
+            .filter((t) => t.summary)
+            .map((t) => `${t.title}: ${t.summary}`)
+            .join("; ");
+
+          await liveStore.updateSession(updated.id, {
+            status: "idle",
+            latestSummary: completedSummaries || "Task plan completed.",
+          });
+          await liveStore.appendEvent(updated.id, {
+            type: "status",
+            level: "info",
+            message: "Task plan completed.",
+            payload: { summary: completedSummaries, plan: formatPlan(plan) },
+          });
+        } else if (agentType === "cli") {
           const result = await drivePiAgent({
             instruction,
             client: auth.client,
@@ -427,6 +540,9 @@ export async function createServer(config: {
             payload: { summary: result.summary },
           });
         } else {
+          // Initialize memory for this session
+          await memoryManager.initSession(updated.id);
+
           const result = await driveDesktopAgent({
             client: auth.client,
             model: updated.model,
@@ -441,6 +557,8 @@ export async function createServer(config: {
             },
             shouldStop: () => Boolean(liveStore.getSession(updated.id)?.stopRequested),
             maxTurns: 30,
+            memoryManager,
+            sessionId: updated.id,
           });
 
           await liveStore.updateSession(updated.id, {
@@ -455,6 +573,19 @@ export async function createServer(config: {
             message: "Instruction completed.",
             payload: { summary: result.summary },
           });
+
+          // Finalize memory for this session
+          try {
+            await memoryManager.finalizeSession(
+              updated.id,
+              result.summary,
+              liveStore.getEvents(updated.id),
+              auth.client as unknown as import("../../../packages/memory/src/types.js").ResponsesClient,
+              updated.model,
+            );
+          } catch {
+            // Memory finalization is best-effort
+          }
         }
       } catch (error) {
         await liveStore.updateSession(updated.id, {
@@ -470,6 +601,37 @@ export async function createServer(config: {
     })();
 
     response.status(202).json(updated);
+  });
+
+  app.post("/api/live-sessions/:id/confirm", async (request, response) => {
+    const session = liveStore.getSession(request.params.id);
+    if (!session) {
+      response.status(404).json({ error: "Live session not found." });
+      return;
+    }
+
+    if (!session.pendingConfirmation) {
+      response.status(400).json({ error: "No pending confirmation." });
+      return;
+    }
+
+    const choice = String(request.body?.choice ?? "");
+    const updated = await liveStore.updateSession(session.id, {
+      pendingConfirmation: {
+        ...session.pendingConfirmation,
+        resolveWith: choice || "confirmed",
+      },
+      status: "acting",
+    });
+
+    await liveStore.appendEvent(session.id, {
+      type: "status",
+      level: "info",
+      message: `User confirmed: ${choice || "confirmed"}`,
+      payload: { choice },
+    });
+
+    response.json(updated);
   });
 
   app.post("/api/live-sessions/:id/stop", async (request, response) => {
@@ -490,6 +652,209 @@ export async function createServer(config: {
     response.json(updated);
   });
 
+  // ─── Screen Frame Stream (SSE) ───────────────────────────────────────
+  const frameStreamer = new FrameStreamer(sidecar, 2);
+
+  app.get("/api/live-sessions/:id/screen-stream", (request, response) => {
+    const session = liveStore.getSession(request.params.id);
+    if (!session) {
+      response.status(404).json({ error: "Live session not found." });
+      return;
+    }
+
+    response.setHeader("Content-Type", "text/event-stream");
+    response.setHeader("Cache-Control", "no-cache");
+    response.setHeader("Connection", "keep-alive");
+    response.flushHeaders();
+
+    const unsubscribe = frameStreamer.subscribe((frame) => {
+      // Send frame as SSE event with JPEG base64
+      response.write(`data: ${JSON.stringify({ timestamp: frame.timestamp, width: frame.width, height: frame.height, image: frame.base64 })}\n\n`);
+    });
+
+    request.on("close", unsubscribe);
+  });
+
+  // ─── Logs API ────────────────────────────────────────────────────────
+  app.get("/api/logs/files", async (_request, response) => {
+    const files = await logCollector.listFiles();
+    response.json(files);
+  });
+
+  app.get("/api/logs/files/:filename", async (request, response) => {
+    try {
+      const content = await logCollector.readFile(request.params.filename);
+      response.type("text/plain").send(content);
+    } catch {
+      response.status(404).json({ error: "Log file not found." });
+    }
+  });
+
+  app.get("/api/logs/stream", (request, response) => {
+    response.setHeader("Content-Type", "text/event-stream");
+    response.setHeader("Cache-Control", "no-cache");
+    response.setHeader("Connection", "keep-alive");
+    response.flushHeaders();
+
+    // Send recent entries as catchup
+    for (const entry of logCollector.getRecent(100)) {
+      response.write(`data: ${JSON.stringify(entry)}\n\n`);
+    }
+
+    const unsubscribe = logCollector.subscribe((entry) => {
+      response.write(`data: ${JSON.stringify(entry)}\n\n`);
+    });
+
+    request.on("close", unsubscribe);
+  });
+
+  // ─── Memory API ──────────────────────────────────────────────────────
+  app.get("/api/memory/global", async (_request, response) => {
+    const entries = await memoryManager.getStore().loadGlobal();
+    response.json(entries);
+  });
+
+  app.get("/api/memory/apps", async (_request, response) => {
+    const profiles = await memoryManager.getStore().listAppProfiles();
+    response.json(profiles);
+  });
+
+  app.get("/api/memory/apps/:name", async (request, response) => {
+    const profile = await memoryManager.getStore().loadAppProfile(request.params.name);
+    if (!profile) {
+      response.status(404).json({ error: "App profile not found." });
+      return;
+    }
+    response.json(profile);
+  });
+
+  app.delete("/api/memory/:id", async (request, response) => {
+    const deleted = await memoryManager.getStore().deleteById(request.params.id);
+    if (!deleted) {
+      response.status(404).json({ error: "Memory entry not found." });
+      return;
+    }
+    response.json({ deleted: true });
+  });
+
+  app.post("/api/memory", async (request, response) => {
+    const body = request.body;
+    if (!body?.content) {
+      response.status(400).json({ error: "content is required." });
+      return;
+    }
+    const entry = await memoryManager.getLongTerm().storeEntry({
+      updatedAt: new Date().toISOString(),
+      category: body.category || "preference",
+      appContext: body.appContext,
+      scope: body.appContext ? "app" : "global",
+      content: body.content,
+      accessCount: 0,
+      lastAccessedAt: new Date().toISOString(),
+      tags: body.tags || [],
+      confidence: body.confidence ?? 0.8,
+    });
+    response.status(201).json(entry);
+  });
+
+  // ─── Unified History API ─────────────────────────────────────────────
+  app.get("/api/history", (_request, response) => {
+    const limit = Math.min(Math.max(Number(_request.query.limit) || 20, 1), 100);
+    const offset = Math.max(Number(_request.query.offset) || 0, 0);
+
+    type HistoryItem = {
+      id: string;
+      type: "live-session" | "run";
+      createdAt: string;
+      updatedAt: string;
+      status: string;
+      instruction?: string;
+      summary?: string;
+      error?: string;
+      hasToolEvents: boolean;
+    };
+
+    const items: HistoryItem[] = [];
+
+    for (const session of liveStore.listSessions()) {
+      const events = liveStore.getEvents(session.id);
+      const hasToolEvents = events.some((e) => e.type === "tool_call" || e.type === "computer_action");
+      items.push({
+        id: session.id,
+        type: "live-session",
+        createdAt: session.createdAt,
+        updatedAt: session.updatedAt,
+        status: session.status,
+        instruction: session.latestInstruction,
+        summary: session.latestSummary,
+        error: session.error,
+        hasToolEvents,
+      });
+    }
+
+    for (const run of store.listRuns()) {
+      const events = store.getEvents(run.id);
+      const hasToolEvents = events.some((e) => e.type === "tool_call" || e.type === "computer_action");
+      items.push({
+        id: run.id,
+        type: "run",
+        createdAt: run.createdAt,
+        updatedAt: run.updatedAt,
+        status: run.status,
+        summary: run.summary,
+        error: run.error ? run.error.message : undefined,
+        hasToolEvents,
+      });
+    }
+
+    items.sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+    const paged = items.slice(offset, offset + limit);
+    response.json({ items: paged, total: items.length, limit, offset });
+  });
+
+  app.get("/api/history/:id", (request, response) => {
+    const { id } = request.params;
+
+    const session = liveStore.getSession(id);
+    if (session) {
+      response.json({
+        type: "live-session",
+        record: session,
+        events: liveStore.getEvents(id),
+      });
+      return;
+    }
+
+    const run = store.getRun(id);
+    if (run) {
+      response.json({
+        type: "run",
+        record: run,
+        events: store.getEvents(id),
+      });
+      return;
+    }
+
+    response.status(404).json({ error: "Record not found." });
+  });
+
+  app.delete("/api/history/:id", async (request, response) => {
+    const { id } = request.params;
+
+    if (await liveStore.deleteSession(id)) {
+      response.json({ deleted: true });
+      return;
+    }
+
+    if (await store.deleteRun(id)) {
+      response.json({ deleted: true });
+      return;
+    }
+
+    response.status(404).json({ error: "Record not found." });
+  });
+
+  // ─── Catch-all SPA fallback ─────────────────────────────────────────
   app.get(/^(?!\/api|\/artifacts).*/, (_request, response) => {
     response.sendFile(path.join(operatorWebDir, "index.html"));
   });

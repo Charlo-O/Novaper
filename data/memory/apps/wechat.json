@@ -1,0 +1,19 @@
+{
+  "appName": "WeChat",
+  "processNames": [
+    "WeChat.exe",
+    "WeChatApp.exe"
+  ],
+  "windowTitlePatterns": [
+    "微信",
+    "WeChat"
+  ],
+  "knownBehaviors": [
+    "Qt-based UI, UIA tree is unreliable",
+    "Send button may require click or Enter/Ctrl+Enter",
+    "Message delivery should be verified by checking input box cleared"
+  ],
+  "preferredInteraction": "vision",
+  "complexity": "complex",
+  "memories": []
+}

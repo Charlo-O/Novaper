@@ -1,24 +1,21 @@
 import { createFileRoute } from '@tanstack/react-router';
-import { useState, useEffect, useCallback } from 'react';
-import { FileText, FolderOpen, RefreshCw, AlertCircle } from 'lucide-react';
+import { useState, useEffect, useCallback, useRef } from 'react';
+import { FileText, RefreshCw, AlertCircle, Radio } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { useTranslation } from '../lib/i18n-context';
 
-interface LogFile {
+interface LogFileInfo {
   name: string;
-  path: string;
   size: number;
-  modified: Date;
-  isError: boolean;
-  isCompressed: boolean;
+  modified: string;
 }
 
-interface ElectronAPI {
-  logs: {
-    listFiles: () => Promise<LogFile[]>;
-    readFile: (filename: string) => Promise<string>;
-    openFolder: () => Promise<{ success: boolean; error?: string }>;
-  };
+interface LogEntry {
+  timestamp: string;
+  level: 'debug' | 'info' | 'warn' | 'error';
+  source: string;
+  message: string;
+  metadata?: unknown;
 }
 
 export const Route = createFileRoute('/logs')({
@@ -27,22 +24,24 @@ export const Route = createFileRoute('/logs')({
 
 function LogsComponent() {
   const t = useTranslation();
-  const [logFiles, setLogFiles] = useState<LogFile[]>([]);
+  const [logFiles, setLogFiles] = useState<LogFileInfo[]>([]);
   const [selectedLog, setSelectedLog] = useState<string | null>(null);
   const [logContent, setLogContent] = useState<string>('');
   const [loading, setLoading] = useState(false);
   const [contentLoading, setContentLoading] = useState(false);
   const [error, setError] = useState<string>('');
-  const [isElectron, setIsElectron] = useState(false);
+  const [liveMode, setLiveMode] = useState(false);
+  const [liveEntries, setLiveEntries] = useState<LogEntry[]>([]);
+  const liveRef = useRef<HTMLPreElement>(null);
+  const eventSourceRef = useRef<EventSource | null>(null);
 
   const loadLogFiles = useCallback(async () => {
     try {
       setLoading(true);
       setError('');
-      const electronAPI = (window as Window & { electronAPI?: ElectronAPI })
-        .electronAPI;
-      if (!electronAPI?.logs) return;
-      const files = await electronAPI.logs.listFiles();
+      const response = await fetch('/api/logs/files');
+      if (!response.ok) throw new Error(`${response.status}`);
+      const files: LogFileInfo[] = await response.json();
       setLogFiles(files);
     } catch (err) {
       const errorMsg = err instanceof Error ? err.message : String(err);
@@ -53,22 +52,32 @@ function LogsComponent() {
   }, [t.logs.loadFailed]);
 
   useEffect(() => {
-    const electronAPI = (window as Window & { electronAPI?: ElectronAPI })
-      .electronAPI;
-    if (electronAPI?.logs) {
-      setIsElectron(true);
-      loadLogFiles();
-    }
+    loadLogFiles();
   }, [loadLogFiles]);
+
+  // Clean up SSE on unmount
+  useEffect(() => {
+    return () => {
+      eventSourceRef.current?.close();
+    };
+  }, []);
+
+  // Auto-scroll live logs
+  useEffect(() => {
+    if (liveMode && liveRef.current) {
+      liveRef.current.scrollTop = liveRef.current.scrollHeight;
+    }
+  }, [liveEntries, liveMode]);
 
   const viewLogFile = async (filename: string) => {
     setContentLoading(true);
     setError('');
+    setLiveMode(false);
+    eventSourceRef.current?.close();
     try {
-      const electronAPI = (window as Window & { electronAPI?: ElectronAPI })
-        .electronAPI;
-      if (!electronAPI?.logs) return;
-      const content = await electronAPI.logs.readFile(filename);
+      const response = await fetch(`/api/logs/files/${encodeURIComponent(filename)}`);
+      if (!response.ok) throw new Error(`${response.status}`);
+      const content = await response.text();
       setSelectedLog(filename);
       setLogContent(content);
     } catch (err) {
@@ -79,21 +88,39 @@ function LogsComponent() {
     }
   };
 
-  const openLogsFolder = async () => {
-    try {
-      const electronAPI = (window as Window & { electronAPI?: ElectronAPI })
-        .electronAPI;
-      if (!electronAPI?.logs) return;
-      const result = await electronAPI.logs.openFolder();
-      if (!result.success) {
-        setError(
-          t.logs.openFolderFailed.replace('{error}', result.error || '')
-        );
-      }
-    } catch (err) {
-      const errorMsg = err instanceof Error ? err.message : String(err);
-      setError(t.logs.openFolderFailed.replace('{error}', errorMsg));
+  const toggleLiveMode = () => {
+    if (liveMode) {
+      // Turn off
+      eventSourceRef.current?.close();
+      eventSourceRef.current = null;
+      setLiveMode(false);
+      return;
     }
+
+    // Turn on
+    setLiveMode(true);
+    setSelectedLog(null);
+    setLiveEntries([]);
+
+    const es = new EventSource('/api/logs/stream');
+    eventSourceRef.current = es;
+
+    es.onmessage = (event) => {
+      try {
+        const entry: LogEntry = JSON.parse(event.data);
+        setLiveEntries(prev => {
+          const next = [...prev, entry];
+          if (next.length > 500) return next.slice(-500);
+          return next;
+        });
+      } catch {
+        // ignore parse errors
+      }
+    };
+
+    es.onerror = () => {
+      // EventSource will auto-reconnect
+    };
   };
 
   const formatFileSize = (bytes: number) => {
@@ -102,23 +129,27 @@ function LogsComponent() {
     return (bytes / (1024 * 1024)).toFixed(1) + ' MB';
   };
 
-  const formatDate = (date: Date) => {
-    return new Date(date).toLocaleString('zh-CN');
+  const formatDate = (dateStr: string) => {
+    return new Date(dateStr).toLocaleString('zh-CN');
   };
 
-  if (!isElectron) {
-    return (
-      <div className="flex items-center justify-center h-full">
-        <div className="text-center">
-          <AlertCircle className="w-12 h-12 mx-auto mb-4 text-slate-400" />
-          <p
-            className="text-slate-600"
-            dangerouslySetInnerHTML={{ __html: t.logs.webVersionNotice }}
-          />
-        </div>
-      </div>
-    );
-  }
+  const getLevelColor = (level: string) => {
+    switch (level) {
+      case 'error':
+        return 'text-red-500';
+      case 'warn':
+        return 'text-yellow-500';
+      case 'info':
+        return 'text-blue-400';
+      default:
+        return 'text-slate-400';
+    }
+  };
+
+  const formatLogEntry = (entry: LogEntry) => {
+    const time = entry.timestamp.slice(11, 23); // HH:mm:ss.SSS
+    return `${time} [${entry.level.toUpperCase().padEnd(5)}] [${entry.source}] ${entry.message}`;
+  };
 
   return (
     <div className="h-full flex">
@@ -138,9 +169,13 @@ function LogsComponent() {
               />
             </Button>
           </div>
-          <Button variant="outline" className="w-full" onClick={openLogsFolder}>
-            <FolderOpen className="w-4 h-4 mr-2" />
-            {t.logs.openFolder}
+          <Button
+            variant={liveMode ? 'default' : 'outline'}
+            className="w-full"
+            onClick={toggleLiveMode}
+          >
+            <Radio className={`w-4 h-4 mr-2 ${liveMode ? 'animate-pulse' : ''}`} />
+            {liveMode ? '停止实时日志' : '实时日志流'}
           </Button>
         </div>
 
@@ -159,14 +194,10 @@ function LogsComponent() {
                       ? 'bg-slate-50 dark:bg-slate-900'
                       : ''
                   }`}
-                  onClick={() => !file.isCompressed && viewLogFile(file.name)}
+                  onClick={() => viewLogFile(file.name)}
                 >
                   <div className="flex items-start gap-3">
-                    {file.isError ? (
-                      <AlertCircle className="w-5 h-5 text-red-500 flex-shrink-0 mt-0.5" />
-                    ) : (
-                      <FileText className="w-5 h-5 text-slate-400 flex-shrink-0 mt-0.5" />
-                    )}
+                    <FileText className="w-5 h-5 text-slate-400 flex-shrink-0 mt-0.5" />
                     <div className="flex-1 min-w-0">
                       <div className="font-medium text-sm truncate">
                         {file.name}
@@ -177,11 +208,6 @@ function LogsComponent() {
                       </div>
                     </div>
                   </div>
-                  {file.isCompressed && (
-                    <div className="text-xs text-slate-400 mt-2 ml-8">
-                      {t.logs.compressedFileNote}
-                    </div>
-                  )}
                 </div>
               ))}
             </div>
@@ -190,7 +216,25 @@ function LogsComponent() {
       </div>
 
       <div className="flex-1 flex flex-col">
-        {selectedLog ? (
+        {liveMode ? (
+          <>
+            <div className="p-4 border-b border-slate-200 dark:border-slate-800 flex items-center gap-2">
+              <Radio className="w-4 h-4 text-red-500 animate-pulse" />
+              <h3 className="font-semibold">实时日志</h3>
+              <span className="text-xs text-slate-500">({liveEntries.length} 条)</span>
+            </div>
+            <pre
+              ref={liveRef}
+              className="flex-1 overflow-auto p-4 bg-slate-950 text-xs font-mono"
+            >
+              {liveEntries.map((entry, i) => (
+                <div key={i} className={getLevelColor(entry.level)}>
+                  {formatLogEntry(entry)}
+                </div>
+              ))}
+            </pre>
+          </>
+        ) : selectedLog ? (
           <>
             <div className="p-4 border-b border-slate-200 dark:border-slate-800">
               <h3 className="font-semibold">{selectedLog}</h3>

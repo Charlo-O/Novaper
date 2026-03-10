@@ -1,0 +1,18 @@
+{
+  "appName": "Notepad",
+  "processNames": [
+    "notepad.exe",
+    "Notepad.exe"
+  ],
+  "windowTitlePatterns": [
+    "记事本",
+    "Notepad",
+    "无标题"
+  ],
+  "knownBehaviors": [
+    "Simple text editor with good UIA support"
+  ],
+  "preferredInteraction": "uia",
+  "complexity": "simple",
+  "memories": []
+}

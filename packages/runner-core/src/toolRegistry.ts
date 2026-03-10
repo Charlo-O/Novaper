@@ -78,6 +78,19 @@ function normalizeDesktopActions(value: unknown): ComputerAction[] {
   });
 }
 
+const MAX_TOOL_RESPONSE_LENGTH = 5000;
+
+/** Truncate tool response to prevent context overflow */
+function truncateResult(result: unknown): unknown {
+  const str = JSON.stringify(result);
+  if (str.length <= MAX_TOOL_RESPONSE_LENGTH) return result;
+  return {
+    _truncated: true,
+    _originalLength: str.length,
+    data: str.slice(0, MAX_TOOL_RESPONSE_LENGTH) + "... (truncated)",
+  };
+}
+
 export function createToolRegistry(sidecar: DesktopSidecar): ToolDefinition[] {
   return [
     {
@@ -315,6 +328,79 @@ export function createToolRegistry(sidecar: DesktopSidecar): ToolDefinition[] {
         },
       },
       execute: async (args) => sidecar.renameFile({ path: String(args.path), newName: String(args.newName) }),
+    },
+    {
+      name: "detect_elements",
+      description:
+        "Detect structured UI elements on the current screen using UI Automation. Returns clickable elements and text elements for structured interaction planning.",
+      parameters: {
+        type: "object",
+        additionalProperties: false,
+        properties: {
+          include_text: {
+            type: "boolean",
+            description: "Include text/label elements (default true)",
+          },
+          include_clickable: {
+            type: "boolean",
+            description: "Include clickable elements like buttons, links (default true)",
+          },
+          processName: {
+            type: "string",
+            description: "Filter to a specific process name",
+          },
+          windowTitleContains: {
+            type: "string",
+            description: "Filter to windows matching this title substring",
+          },
+        },
+      },
+      execute: async (args) => {
+        const includeText = args.include_text !== false;
+        const includeClickable = args.include_clickable !== false;
+        const controlTypes: string[] = [];
+        if (includeClickable) controlTypes.push("Button", "Hyperlink", "MenuItem", "ListItem", "TabItem", "TreeItem");
+        if (includeText) controlTypes.push("Text", "Edit", "Document");
+
+        const results = [];
+        for (const ct of controlTypes) {
+          try {
+            const elements = await sidecar.uiaFind({
+              selector: {
+                controlType: ct,
+                processName: args.processName as string | undefined,
+                windowTitleContains: args.windowTitleContains as string | undefined,
+                scope: "descendants",
+                maxResults: 20,
+              },
+            });
+            results.push(...elements.map((el) => ({ ...el, controlType: ct })));
+          } catch {
+            // some control types may not exist
+          }
+        }
+
+        return truncateResult(results);
+      },
+    },
+    {
+      name: "google_search",
+      description: "Open a Google search in the default browser. Use this when you need to look up information online.",
+      parameters: {
+        type: "object",
+        additionalProperties: false,
+        required: ["query"],
+        properties: {
+          query: { type: "string", description: "The search query" },
+        },
+      },
+      execute: async (args) => {
+        const query = encodeURIComponent(String(args.query));
+        return sidecar.launchProcess({
+          command: "cmd",
+          args: ["/c", "start", `https://www.google.com/search?q=${query}`],
+        });
+      },
     },
   ];
 }

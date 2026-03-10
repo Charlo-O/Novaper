@@ -1,0 +1,19 @@
+{
+  "appName": "File Explorer",
+  "processNames": [
+    "explorer.exe"
+  ],
+  "windowTitlePatterns": [
+    "文件资源管理器",
+    "File Explorer",
+    "此电脑"
+  ],
+  "knownBehaviors": [
+    "Good UIA support for navigation",
+    "Address bar accessible for path input",
+    "Right-click context menus work via UIA"
+  ],
+  "preferredInteraction": "uia",
+  "complexity": "moderate",
+  "memories": []
+}

@@ -4,20 +4,11 @@ import {
   listHistory,
   clearHistory,
   deleteHistoryRecord,
-  getDevices,
   type HistoryRecordResponse,
-  type Device,
 } from '../api';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from '@/components/ui/select';
 import {
   AlertDialog,
   AlertDialogAction,
@@ -54,8 +45,6 @@ export const Route = createFileRoute('/history')({
 
 function HistoryComponent() {
   const t = useTranslation();
-  const [devices, setDevices] = useState<Device[]>([]);
-  const [selectedSerial, setSelectedSerial] = useState<string>('');
   const [records, setRecords] = useState<HistoryRecordResponse[]>([]);
   const [loading, setLoading] = useState(false);
   const [loadingMore, setLoadingMore] = useState(false);
@@ -70,28 +59,9 @@ function HistoryComponent() {
   const [expandedSteps, setExpandedSteps] = useState<Set<number>>(new Set());
   const limit = 20;
 
-  // Load devices
-  useEffect(() => {
-    const loadDevices = async () => {
-      try {
-        const deviceList = await getDevices();
-        setDevices(deviceList);
-        // Auto-select first device if available
-        if (deviceList.length > 0 && !selectedSerial) {
-          setSelectedSerial(deviceList[0].serial);
-        }
-      } catch (error) {
-        console.error('Failed to load devices:', error);
-      }
-    };
-    loadDevices();
-  }, [selectedSerial]);
-
-  // Load history when device changes
+  // Load history from server
   const loadHistory = useCallback(
-    async (serial: string, reset = true) => {
-      if (!serial) return;
-
+    async (reset = true) => {
       try {
         if (reset) {
           setLoading(true);
@@ -101,7 +71,7 @@ function HistoryComponent() {
         }
 
         const newOffset = reset ? 0 : offset;
-        const data = await listHistory(serial, limit, newOffset);
+        const data = await listHistory(undefined, limit, newOffset);
 
         if (reset) {
           setRecords(data.records);
@@ -121,21 +91,18 @@ function HistoryComponent() {
   );
 
   useEffect(() => {
-    if (selectedSerial) {
-      loadHistory(selectedSerial, true);
-    }
-  }, [selectedSerial]); // eslint-disable-line react-hooks/exhaustive-deps
+    loadHistory(true);
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   const handleLoadMore = () => {
-    if (selectedSerial && records.length < total) {
-      loadHistory(selectedSerial, false);
+    if (records.length < total) {
+      loadHistory(false);
     }
   };
 
   const handleClearAll = async () => {
-    if (!selectedSerial) return;
     try {
-      await clearHistory(selectedSerial);
+      await clearHistory();
       setRecords([]);
       setTotal(0);
       setOffset(0);
@@ -146,9 +113,9 @@ function HistoryComponent() {
   };
 
   const handleDelete = async () => {
-    if (!selectedSerial || !recordToDelete) return;
+    if (!recordToDelete) return;
     try {
-      await deleteHistoryRecord(selectedSerial, recordToDelete);
+      await deleteHistoryRecord('', recordToDelete);
       setRecords(prev => prev.filter(r => r.id !== recordToDelete));
       setTotal(prev => prev - 1);
     } catch (error) {
@@ -160,7 +127,6 @@ function HistoryComponent() {
 
   const handleViewDetail = (record: HistoryRecordResponse) => {
     setSelectedRecord(record);
-    // 默认展开所有步骤
     const allSteps = new Set<number>();
     record.messages.forEach(msg => {
       if (msg.step !== null && msg.step !== undefined) {
@@ -244,24 +210,6 @@ function HistoryComponent() {
       <div className="flex justify-between items-center mb-6">
         <h1 className="text-3xl font-bold">{t.historyPage.title}</h1>
         <div className="flex items-center gap-4">
-          <Select value={selectedSerial} onValueChange={setSelectedSerial}>
-            <SelectTrigger className="w-[200px]">
-              <SelectValue placeholder={t.historyPage.selectDevice} />
-            </SelectTrigger>
-            <SelectContent>
-              {devices.length === 0 ? (
-                <SelectItem value="_none" disabled>
-                  {t.historyPage.noDevices}
-                </SelectItem>
-              ) : (
-                devices.map(device => (
-                  <SelectItem key={device.serial} value={device.serial}>
-                    {device.model || device.serial}
-                  </SelectItem>
-                ))
-              )}
-            </SelectContent>
-          </Select>
           {records.length > 0 && (
             <Button
               variant="destructive"

@@ -1,0 +1,20 @@
+{
+  "appName": "WPS Office",
+  "processNames": [
+    "wps.exe",
+    "et.exe",
+    "wpp.exe"
+  ],
+  "windowTitlePatterns": [
+    "WPS",
+    "金山文档"
+  ],
+  "knownBehaviors": [
+    "Custom-drawn UI, UIA partially works",
+    "Ribbon interface similar to MS Office",
+    "File operations may trigger WPS cloud prompts"
+  ],
+  "preferredInteraction": "hybrid",
+  "complexity": "complex",
+  "memories": []
+}

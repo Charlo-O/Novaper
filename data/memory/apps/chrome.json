@@ -1,0 +1,18 @@
+{
+  "appName": "Chrome",
+  "processNames": [
+    "chrome.exe"
+  ],
+  "windowTitlePatterns": [
+    "Google Chrome",
+    "Chrome"
+  ],
+  "knownBehaviors": [
+    "Standard Chromium UIA support",
+    "Tab switching via Ctrl+Tab or clicking tab",
+    "Address bar accessible via Ctrl+L"
+  ],
+  "preferredInteraction": "hybrid",
+  "complexity": "moderate",
+  "memories": []
+}
