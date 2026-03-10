@@ -1,101 +1,136 @@
 # Novaper
 
-Novaper 是一个面向 Windows 的 AI 电脑操作平台。它把模型推理、桌面观测、PowerShell sidecar、回放归档和实时控制台整合到同一个本地系统里，目标是让 AI 能够像操作员一样“看见桌面、理解指令、执行动作、记录过程”。
+Novaper is a Windows-first AI computer operator. It combines a local runner, a browser control panel, a PowerShell sidecar, structured replay data, memory, task planning, and browser automation into one system.
 
-当前仓库已经包含两条工作路径：
-- `Live Desktop Operator`：一边查看当前桌面，一边接受自然语言指令并执行。
-- `Scenario Runner`：按预定义场景运行流程，输出事件、截图和 replay 归档。
+Current repository modes:
+- `Live Desktop Operator`: observe the current desktop, send one instruction at a time, and watch the agent execute in real time.
+- `Scenario Runner`: execute predefined scenarios, persist events and screenshots, and export replay artifacts.
 
-## 核心能力
+## What It Can Do
 
-- 实时桌面观察：定期截图、窗口列表、SSE 事件流。
-- Windows 操作能力：进程、窗口、文件、UI Automation、键鼠动作、批量动作执行。
-- 双认证模型接入：`OPENAI_API_KEY` 与 `Codex OAuth` 并存。
-- 纯视觉 fallback：当 UIA 不稳定时，模型可以基于当前截图计算坐标，并通过 `desktop_actions` 执行鼠标键盘操作。
-- 可回放运行记录：场景执行会产出结构化事件、截图和 zip replay。
+- Control native Windows apps through UI Automation, window management, process control, and file operations
+- Fall back to screenshot-driven `desktop_actions` when UIA is unreliable
+- Control Chromium browsers with DOM-aware tools backed by `puppeteer-core`
+- Route instructions between desktop execution, CLI execution, and multi-step planning
+- Persist live sessions, runs, logs, memory, screenshots, and replay artifacts under `data/`
+- Support both `OPENAI_API_KEY` and local `Codex OAuth`
 
-## 文档导航
-
-- [产品概览](./docs/product-overview.md)
-- [系统架构](./docs/architecture.md)
-- [安装、启动与认证](./docs/setup-and-auth.md)
-- [桌面自动化策略](./docs/desktop-automation.md)
-- [HTTP API 参考](./docs/api-reference.md)
-
-## 架构概览
+## Architecture Summary
 
 ```mermaid
 flowchart LR
-  User["Operator / User"] --> Web["apps/operator-web"]
+  User["Operator"] --> Web["apps/operator-web"]
   Web --> Runner["apps/runner"]
-  Runner --> Agent["packages/runner-core"]
-  Agent --> Sidecar["agents/sidecar-win"]
-  Agent --> Model["OpenAI API / Codex OAuth"]
-  Sidecar --> Windows["Windows Desktop"]
-  Runner --> Data["data/runs + data/live-sessions"]
+  Runner --> Core["packages/runner-core"]
+  Runner --> Memory["packages/memory"]
+  Core --> Browser["packages/browser-runtime"]
+  Core --> Desktop["packages/desktop-runtime"]
+  Desktop --> Sidecar["agents/sidecar-win/Invoke-Sidecar.ps1"]
+  Browser --> Chromium["Chrome / Edge / Brave"]
+  Sidecar --> Windows["Windows Desktop Session"]
+  Runner --> Data["data/"]
+  Core --> Model["OpenAI API / Codex backend"]
 ```
 
-## 快速开始
+## Repository Layout
 
-1. 安装依赖
+- `apps/operator-web`: browser UI for live sessions, history, logs, and memory views
+- `apps/runner`: Express server, auth, SSE, session orchestration, scenario execution
+- `packages/runner-core`: routing, tool registry, desktop loop, CLI loop, planner, video observer
+- `packages/browser-runtime`: managed Chromium session layer for DOM-aware browser control
+- `packages/desktop-runtime`: Node bridge for the PowerShell sidecar
+- `packages/memory`: working memory, long-term memory, app context memory, persistence
+- `packages/scenario-kit`: scenario loading
+- `packages/replay-schema`: shared run/session types
+- `packages/verifier-kit`: scenario verification helpers
+- `agents/sidecar-win`: Windows PowerShell sidecar implementation
+- `scenarios`: sample scenarios
+- `data`: runtime state, screenshots, logs, memory, replays, auth artifacts
+
+## Quick Start
+
+1. Install dependencies
 
 ```powershell
 npm install
 ```
 
-2. 配置环境变量
+2. Copy environment variables
 
-复制 `.env.example` 到 `.env`，按需填写：
+```powershell
+Copy-Item .env.example .env
+```
 
-- `OPENAI_API_KEY`：如果你走官方 API key 路线。
-- `OPENAI_MODEL`：默认 `gpt-5.4`。
-- `PORT`：默认 `3333`。
-- `HOST`：默认 `127.0.0.1`。
-- `NOVAPER_PROXY_URL`：显式指定代理。
-
-3. 启动服务
+3. Start the runner
 
 ```powershell
 npm start
 ```
 
-4. 打开控制台
+4. Open the control panel
 
 [http://127.0.0.1:3333](http://127.0.0.1:3333)
 
-## 认证模式
+## Environment Variables
+
+- `OPENAI_API_KEY`: use the official OpenAI API path
+- `OPENAI_MODEL`: default model, defaults to `gpt-5.4`
+- `PORT`: runner port, defaults to `3333`
+- `HOST`: bind address, defaults to `127.0.0.1`
+- `NOVAPER_PROXY_URL`: explicit proxy override for Novaper network traffic
+- `HTTPS_PROXY`, `HTTP_PROXY`, `ALL_PROXY`: standard proxy fallbacks
+
+## Auth Modes
 
 ### OpenAI API Key
 
-服务启动前设置 `OPENAI_API_KEY`。当 API key 存在时，默认 provider 为 `api-key`。
+Use this when you want the official OpenAI SDK path and optional official `computer` tool support.
 
 ### Codex OAuth
 
-无需 `OPENAI_API_KEY`，可在控制台点击 `Login Codex` 发起本地 OAuth 流程。
+Use this when you want to authenticate through local ChatGPT Codex login instead of storing `OPENAI_API_KEY`. This path uses Novaper's own tools and local history management instead of relying on the official `computer` tool.
 
-- 授权页会在浏览器中打开。
-- 回调地址固定为 `http://localhost:1455/auth/callback`。
-- 刷新后的凭据保存在 `data/auth/codex-oauth.json`。
+OAuth callback:
+- `http://localhost:1455/auth/callback`
 
-注意：
-- `1455` 端口必须空闲。
-- Codex OAuth 当前通过 `https://chatgpt.com/backend-api/codex` 传输层工作。
-- Codex OAuth 路径下不依赖官方 `computer` tool，优先走 Novaper 自己的桌面工具。
+Stored credential:
+- `data/auth/codex-oauth.json`
 
-## 仓库结构
+## Tool Strategy
 
-- `apps/runner`：HTTP API、SSE、auth、live session 和 run 管理。
-- `apps/operator-web`：浏览器控制台，用于实时查看桌面并发指令。
-- `packages/runner-core`：agent loop、工具注册和桌面执行编排。
-- `packages/desktop-runtime`：Node 对 sidecar 的封装。
-- `packages/scenario-kit`：场景 manifest 和 verifier 加载。
-- `packages/replay-schema`：run/replay 结构定义。
-- `agents/sidecar-win`：Windows PowerShell sidecar。
-- `scenarios`：示例场景。
+Novaper does not use one control method for everything.
 
-## 当前边界
+For web pages:
+- `browser_*` tools first
+- `desktop_actions` only as a fallback
 
-- 当前仍是单机本地 MVP，不含多机调度和权限体系。
-- 没有 RBAC、PII 遮罩、灰度发布和自动恢复策略。
-- `set_display_profile` 目前只做参数校验，不实际修改系统显示设置。
-- 一些第三方桌面应用的 UIA 暴露并不稳定，因此需要视觉 fallback。
+For native Windows apps:
+- UIA and deterministic tools first
+- process, file, and window tools next
+- `desktop_actions` as fallback
+
+When available through the provider:
+- official `computer` tool is supplemental, not the primary path
+
+## Runtime Data
+
+- `data/live-sessions`: live session state, events, screenshots
+- `data/runs`: scenario runs and replay exports
+- `data/logs`: intercepted server logs
+- `data/memory`: app profiles, long-term memory, session snapshots
+- `data/auth`: Codex OAuth credentials
+
+## Documentation
+
+- [Product Overview](./docs/product-overview.md)
+- [Architecture](./docs/architecture.md)
+- [Setup and Auth](./docs/setup-and-auth.md)
+- [Desktop and Browser Automation](./docs/desktop-automation.md)
+- [API Reference](./docs/api-reference.md)
+
+## Current Boundaries
+
+- This is still a local-machine Windows-focused system, not a multi-tenant platform
+- Browser automation currently targets installed Chromium browsers only
+- Some third-party desktop apps still require vision fallback because their UIA trees are incomplete
+- `set_display_profile` validates requested settings but does not mutate the Windows display configuration yet

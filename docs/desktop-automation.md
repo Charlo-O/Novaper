@@ -1,43 +1,75 @@
-# Novaper 桌面自动化策略
+# Desktop and Browser Automation
 
-## 自动化层级
+## Control Hierarchy
 
-Novaper 不是单一手段操作桌面，而是分成四层：
+Novaper does not use one universal control path. It chooses the narrowest reliable tool first.
 
-1. UI Automation 与确定性工具
-2. 进程、窗口、文件级工具
-3. `desktop_actions` 视觉坐标动作
-4. 官方 `computer` tool
+Current preference order:
 
-实际执行时遵循“先稳后泛化”的原则。
+1. `browser_*` tools for Chromium web pages
+2. UI Automation and deterministic desktop tools
+3. process, file, and window tools
+4. `desktop_actions`
+5. official `computer` tool when available from the provider
 
-## 第一层：UIA 与确定性工具
+## Browser Automation
 
-这层适合标准 Windows 控件和可稳定枚举的界面。
+The new browser path is backed by `packages/browser-runtime/src/browserSessionManager.ts`.
 
-典型能力：
+Available browser tools:
+
+- `browser_open`
+- `browser_tabs`
+- `browser_navigate`
+- `browser_snapshot`
+- `browser_click`
+- `browser_type`
+- `browser_press_keys`
+- `browser_wait_for`
+- `browser_scroll`
+- `browser_read`
+
+Use this path when:
+
+- the target is a web page in Chrome, Edge, or Brave
+- you need DOM-aware inspection instead of screenshot guessing
+- you need stable form filling, tab handling, or keyboard shortcuts such as `Ctrl+L`
+
+Recommended browser workflow:
+
+1. `browser_open` or `browser_navigate`
+2. `browser_snapshot`
+3. act with `browser_click`, `browser_type`, or `browser_press_keys`
+4. verify with `browser_snapshot` or `browser_read`
+
+## Deterministic Desktop Tools
+
+Use these first for native Windows apps when they are reliable:
+
+- `list_windows`
+- `focus_window`
+- `launch_process`
+- `kill_process`
+- `check_file`
+- `move_file`
+- `rename_file`
 - `uia_find`
 - `uia_invoke`
 - `uia_set_value`
-- `focus_window`
-- `list_windows`
-- `start_process`
-- `terminate_process`
+- `detect_elements`
 
-优点：
-- 快
-- 可解释
-- 不容易误点
+Why this path is preferred:
 
-缺点：
-- 微信、WPS 等第三方应用不一定稳定暴露控件
-- 标题、控件名、层级一变就可能找不到元素
+- more deterministic than vision clicks
+- easier to debug
+- less sensitive to screen scale and layout drift
 
-## 第二层：视觉 fallback
+## `desktop_actions`
 
-当模型判断 UIA 不可靠时，会基于当前截图推理坐标，并调用 `desktop_actions`。
+`desktop_actions` is the visual fallback when structured desktop access is weak or unavailable.
 
-当前支持的动作包括：
+Supported actions:
+
 - `click`
 - `double_click`
 - `move`
@@ -48,63 +80,67 @@ Novaper 不是单一手段操作桌面，而是分成四层：
 - `wait`
 - `screenshot`
 
-这层是 Novaper 在 Codex OAuth 下的关键能力，因为它不依赖官方 `computer` tool。
+Use this path when:
 
-## 第三层：官方 `computer` tool
+- UIA cannot find the element
+- the app is custom-drawn or Electron/Qt-heavy
+- the target is only visually identifiable
 
-这层主要保留给 API key 路径。
+## App-Specific Guidance
 
-说明：
-- 公开 OpenAI API 文档支持这条能力。
-- Codex OAuth backend 当前不保证兼容。
-- 因此 Novaper 在 `codex-oauth` 模式下默认不依赖它。
+### Chromium Browsers
 
-## 什么时候应该强制视觉，不要 UIA
+Preferred mode:
 
-下面这些情况，建议直接走视觉：
-- 微信联系人列表、聊天列表、搜索框
-- WPS 自定义工具栏、文件菜单、导出面板
-- Electron 应用的自绘控件
-- 多语言、多主题或高 DPI 下标题名不稳定的控件
+- `browser_*` tools first
 
-## 典型失败原因
+Fallbacks:
 
-### `UI element not found.`
+- `desktop_actions` only if the browser page is blocked by modal UI outside the page surface
 
-这是最常见的 UIA 失败。
+### File Explorer and Standard Windows Dialogs
 
-含义：
-- sidecar 按 selector 去查控件
-- 当前窗口里没有匹配项
-- 所以在真正点击或输入前就中断了
+Preferred mode:
 
-常见原因：
-- 当前焦点窗口不对
-- 窗口标题不一致
-- 控件名和预期不同
-- 目标应用没有把控件暴露为标准 UIA `Edit` / `Button`
+- UI Automation
 
-## 建议的操作策略
+Fallbacks:
 
-### 微信
+- `desktop_actions` if animations or custom surfaces break the normal path
 
-- 搜索联系人、切换对话优先走视觉。
-- 输入框如果能稳定聚焦，可以用视觉点击后 `type`。
+### WeChat and QQ
 
-### WPS / Office 类应用
+Preferred mode:
 
-- 菜单和工具栏优先视觉。
-- 打开/另存为等系统原生文件对话框可以再尝试 UIA。
-- 如果是 WPS 自己封装的对话框，不要假设存在标准 `Edit`。
+- vision-first desktop control
 
-### 资源管理器 / 系统设置
+Reason:
 
-- 优先 UIA。
-- 如果存在动画或面板切换，动作后加 `wait` 与截图刷新。
+- custom UI frameworks often expose unstable or incomplete UIA trees
 
-## 调试建议
+### WPS Office
 
-- 先看控制台里的 `tool_call` 和 `tool_result`。
-- 如果连续出现空的 `uia_find` 结果，就不要继续硬试 UIA。
-- 立刻切到视觉模式，减少错误链路。
-- 对重要流程保留 replay，方便复盘。
+Preferred mode:
+
+- mixed strategy
+
+Reason:
+
+- some dialogs behave like standard Windows UI
+- ribbon and app chrome often require visual fallback
+
+## Debugging Strategy
+
+If a task fails:
+
+1. inspect `tool_call` and `tool_result` events first
+2. if browser work failed, verify the last `browser_snapshot`
+3. if UIA returns nothing repeatedly, stop forcing UIA and switch to fallback
+4. if a page changed, re-snapshot before issuing more DOM actions
+5. keep the session artifacts for replay and postmortem
+
+## Practical Rule
+
+For websites, stop thinking in desktop pixels unless you have to.
+
+For native Windows apps, stop forcing DOM-style behavior where there is no DOM.

@@ -1,83 +1,64 @@
-# Novaper 产品概览
+# Product Overview
 
-## 定位
+## Positioning
 
-Novaper 是一个面向 Windows 的 AI 操作平台。它不是单纯的聊天 UI，也不是只会调脚本的 agent 框架，而是把“模型推理 + 桌面观测 + Windows 操作 + 事件回放”放在一个可以直接运行的本地系统中。
+Novaper is a local Windows AI computer operator. It is not only a chat UI, and it is not only a script runner. The system is built to let a model observe the current desktop, decide on the right control path, execute actions, and leave a replayable record.
 
-它的核心目标是：
-- 让 AI 能看到当前桌面状态。
-- 让 AI 能基于指令实际操作电脑。
-- 让每次操作都有结构化事件和截图可追溯。
-- 让同一套系统同时支持实时交互与场景自动化。
+## Core Product Surfaces
 
-## 适合的场景
+### Live Desktop Operator
 
-- 实时桌面助手：打开软件、切换窗口、完成固定操作链。
-- 桌面工作流自动化：导出文件、整理资料、触发本地程序。
-- Agent 研发与验证：观察模型如何选工具、如何失败、如何重试。
-- 演示与运维：用浏览器控制台实时监看当前桌面和 agent 行为。
+The operator creates a live session, observes the current desktop, sends one instruction at a time, and watches the agent stream back screenshots, tool calls, tool results, summaries, and errors.
 
-## 三个核心对象
+### Scenario Runner
 
-### 1. Live Session
+The runner executes predefined scenarios from `scenarios/`, persists structured events, and produces replay artifacts for review and regression work.
 
-面向实时操作。一个 live session 会维护：
-- 当前模型和认证 provider
-- 当前桌面截图
-- 事件流
-- 最新指令和总结
+## Execution Modes
 
-用户通常在控制台里创建 session，然后一条一条地下发指令。
+Novaper routes work into three modes:
 
-### 2. Run
+- `desktop`: GUI-heavy work on the local machine
+- `cli`: shell or file-oriented work
+- `planner`: multi-step instructions that need decomposition before execution
 
-面向预定义场景执行。一个 run 会包含：
-- 场景 ID
-- 输入 payload
-- 运行状态
-- 事件日志
-- replay 目录
+The router lives in `packages/runner-core/src/instructionClassifier.ts`, and planning lives in `packages/runner-core/src/taskPlanner.ts`.
 
-这条路径更适合可重复验证和导出回放归档。
+## Automation Strategy
 
-### 3. Sidecar
+Novaper uses different control paths depending on the target surface.
 
-PowerShell sidecar 是 Novaper 落地到 Windows 的关键。它负责：
-- 截图
-- 枚举和聚焦窗口
-- 进程启动与结束
-- 文件读写
-- UI Automation 查找、调用和输入
-- 鼠标键盘动作
+For websites in Chromium browsers:
+- `browser_*` tools backed by `puppeteer-core`
+- DOM-aware navigation, tab control, element inspection, typing, keyboard shortcuts, scrolling, and text extraction
 
-没有 sidecar，模型只能“思考”，不能真正操作系统。
+For native Windows apps:
+- UI Automation and deterministic tools first
+- process, file, and window management next
+- screenshot-driven `desktop_actions` as the visual fallback
 
-## Novaper 的操作策略
+## State and Persistence
 
-Novaper 默认不是盲点鼠标，而是分层决策：
+Novaper persists runtime state under `data/`:
 
-1. 优先使用确定性工具
-   例如窗口切换、进程启动、文件操作、UIA 查找与输入。
+- `data/live-sessions`: live session metadata, events, screenshots
+- `data/runs`: scenario runs and replay assets
+- `data/logs`: server console capture and JSONL logs
+- `data/memory`: app profiles, long-term memory, session snapshots
+- `data/auth`: local auth state for Codex OAuth
 
-2. UIA 不稳定时，回退到视觉动作
-   通过当前截图理解界面，用像素坐标执行 `desktop_actions`。
+## Why This Product Shape
 
-3. 官方 `computer` tool 仅在可用时作为补充
-   这条路径主要保留给 API key 模式。Codex OAuth 当前不依赖这层。
+The design goal is pragmatic reliability:
 
-这样做的原因很实际：
-- 标准控件上，UIA 更快也更稳。
-- 微信、WPS 这类应用经常 UIA 暴露不完整，视觉 fallback 更有价值。
-- 同一条工具链要同时兼容 OpenAI API 和 Codex OAuth，必须避免只押注一个 provider 的私有能力。
+- use structured tools where possible
+- keep a vision fallback for hostile or custom desktop apps
+- preserve every important action as events and artifacts
+- support both official API auth and Codex OAuth without rewriting the rest of the stack
 
-## 当前能力边界
+## Current Boundaries
 
-- 目前只支持单机本地运行，不支持设备池。
-- 没有完整的权限管理和多用户隔离。
-- 没有敏感信息自动遮罩。
-- 部分第三方应用仍需要纯视觉策略，不能依赖 UIA。
-- `set_display_profile` 还未真正改动系统显示配置。
-
-## 命名说明
-
-仓库品牌和对外文案统一使用 `Novaper`。
+- local-machine, Windows-first product
+- no RBAC or multi-user isolation model
+- no background fleet scheduler
+- no bundled browser; Chromium automation uses the operator's installed Chrome, Edge, or Brave

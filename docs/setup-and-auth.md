@@ -1,141 +1,177 @@
-# Novaper 安装、启动与认证
+# Setup and Auth
 
-## 环境要求
+## Prerequisites
 
-- Windows 桌面环境
-- Node.js 与 npm
+- Windows desktop session with an interactive logged-in user
+- Node.js 20+
 - PowerShell
-- 可交互的本地桌面会话
+- A reachable path to OpenAI or the Codex backend, direct or through proxy
+- An installed Chromium browser if you want DOM-aware browser automation
 
-建议在真实桌面登录状态下运行，不要在锁屏或无人值守会话里启动。
+Supported browser targets:
 
-## 安装
+- Google Chrome
+- Microsoft Edge
+- Brave
+
+## Installation
 
 ```powershell
 npm install
 ```
 
-## 环境变量
+## Environment Variables
 
-| 变量 | 说明 | 默认值 |
+| Variable | Purpose | Default |
 | --- | --- | --- |
-| `OPENAI_API_KEY` | 官方 OpenAI API key | 无 |
-| `OPENAI_MODEL` | 默认模型 | `gpt-5.4` |
-| `PORT` | 服务端口 | `3333` |
-| `HOST` | 监听地址 | `127.0.0.1` |
-| `NOVAPER_PROXY_URL` | Novaper 显式代理地址 | 无 |
-| `HTTPS_PROXY` | 标准 HTTPS 代理 | 无 |
-| `HTTP_PROXY` | 标准 HTTP 代理 | 无 |
-| `ALL_PROXY` | 通用代理 | 无 |
+| `OPENAI_API_KEY` | Official OpenAI API path | unset |
+| `OPENAI_MODEL` | Default model for runs and live sessions | `gpt-5.4` |
+| `PORT` | Runner port | `3333` |
+| `HOST` | Bind address | `127.0.0.1` |
+| `NOVAPER_PROXY_URL` | Explicit Novaper proxy | unset |
+| `HTTPS_PROXY` | HTTPS proxy fallback | unset |
+| `HTTP_PROXY` | HTTP proxy fallback | unset |
+| `ALL_PROXY` | Generic proxy fallback | unset |
 
-## 启动
+## Start the Runner
 
 ```powershell
 npm start
 ```
 
-启动成功后访问：
+Open:
 
 [http://127.0.0.1:3333](http://127.0.0.1:3333)
 
-## 认证方式
+## Auth Modes
 
-### 方式一：OpenAI API Key
+### OpenAI API Key
 
-适合：
-- 你已经有 OpenAI API 使用权限
-- 你希望保留官方 SDK 路线
-- 你要优先使用官方 `computer` tool
+Use this when:
 
-配置方式：
+- you have a usable OpenAI API key
+- you want the official SDK path
+- you may want provider-native computer-tool support where available
+
+PowerShell example:
 
 ```powershell
-$env:OPENAI_API_KEY="sk-..."
+$env:OPENAI_API_KEY = "sk-..."
 npm start
 ```
 
-### 方式二：Codex OAuth
+### Codex OAuth
 
-适合：
-- 你想使用 ChatGPT Plus/Pro 中的 Codex 登录态
-- 你不想在本地放 API key
-- 你接受当前以 Novaper 自定义桌面工具为主
+Use this when:
 
-流程：
+- you want to authenticate through local ChatGPT Codex login
+- you do not want to store `OPENAI_API_KEY`
+- you are fine using Novaper's own desktop and browser tools
 
-1. 启动 Novaper。
-2. 打开控制台并点击 `Login Codex`。
-3. 浏览器完成 OpenAI 授权。
-4. OpenAI 回调到 `http://localhost:1455/auth/callback`。
-5. 刷新后的凭据落盘到 `data/auth/codex-oauth.json`。
+Flow:
 
-注意：
-- `1455` 端口冲突会直接导致登录失败。
-- 这条路径仍然需要代理可达 OpenAI/Codex 服务。
+1. Start Novaper.
+2. Open the control panel.
+3. Trigger `Login Codex`.
+4. Complete browser authorization.
+5. Novaper stores credentials at `data/auth/codex-oauth.json`.
 
-## 代理规则
+Callback URL:
 
-Novaper 启动时会强制为进程级网络流量配置代理，优先级如下：
+- `http://localhost:1455/auth/callback`
+
+Operational notes:
+
+- port `1455` must be free
+- Codex OAuth is handled by Novaper's custom transport
+- the Codex path does not assume official `computer` tool support
+
+## Proxy Resolution
+
+The runner resolves proxy configuration in this order:
 
 1. `NOVAPER_PROXY_URL`
 2. `HTTPS_PROXY`
 3. `HTTP_PROXY`
 4. `ALL_PROXY`
 
-如果你的环境不走代理就会 `403`，应优先设置 `NOVAPER_PROXY_URL`，避免依赖其他工具的隐式代理识别。
+Use `NOVAPER_PROXY_URL` when you want predictable Novaper-only behavior instead of inheriting generic system proxy state.
 
-## 健康检查
+## Health Check
 
-接口：
+Endpoint:
 
-`GET /api/system/health`
+- `GET /api/system/health`
 
-重点字段：
+Useful fields:
+
 - `ok`
 - `machine`
 - `auth`
 - `proxy`
 
-这对排查下面几类问题很有用：
-- sidecar 是否正常
-- 当前默认 provider 是什么
-- 代理有没有生效
+This is the first thing to check when:
 
-## 常见故障
+- auth is failing
+- sidecar connectivity is broken
+- proxy routing is unclear
+
+## Common Failures
 
 ### `OPENAI_API_KEY is not configured`
 
-原因：
-- 你选择了 `api-key` provider，但环境里没有 `OPENAI_API_KEY`
+Cause:
 
-处理：
-- 切到 `Codex OAuth`
-- 或设置 `OPENAI_API_KEY` 后重启
+- you selected the `api-key` path without setting `OPENAI_API_KEY`
+
+Fix:
+
+- set `OPENAI_API_KEY`
+- or switch to `Codex OAuth`
 
 ### `Codex OAuth is not authenticated`
 
-原因：
-- 还没有完成登录
-- 或凭据已失效
+Cause:
 
-处理：
-- 控制台重新点击 `Login Codex`
-- 检查代理和 `1455` 端口
+- the OAuth flow has not been completed
+- or the stored credential has expired
 
-### 403 / 网络被拒
+Fix:
 
-原因：
-- 代理没生效
-- 代理地址填错
-- 当前网络无法直连 OpenAI
+- run `Login Codex` again from the control panel
+- verify that port `1455` is available
+- verify proxy reachability if the login page cannot complete
 
-处理：
-- 优先设置 `NOVAPER_PROXY_URL`
-- 查看 `/api/system/health` 中的 `proxy.enabled`、`proxy.source` 和 `proxy.url`
+### `403` or backend reachability issues
 
-### 400 / Codex backend 参数错误
+Cause:
 
-Novaper 已经针对 Codex backend 做了兼容封装。如果仍然遇到 400，优先检查：
-- 当前 transport 是否被改坏
-- 是否给 Codex 路径传入了官方 `computer` tool
-- 是否漏了 `instructions` 或 `stream`
+- proxy not set or misconfigured
+- local network cannot reach the required backend
+
+Fix:
+
+- set `NOVAPER_PROXY_URL`
+- confirm the value through `/api/system/health`
+
+### Browser automation cannot start
+
+Cause:
+
+- no supported Chromium browser is installed locally
+
+Fix:
+
+- install Chrome, Edge, or Brave
+- verify one of them exists at a normal Windows install path
+
+### Desktop actions fail while the machine looks healthy
+
+Cause:
+
+- Novaper is running without an interactive unlocked desktop session
+
+Fix:
+
+- run it in a real logged-in Windows session
+- avoid locked screen, disconnected session, or non-interactive service contexts

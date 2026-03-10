@@ -1,134 +1,189 @@
-# Novaper 系统架构
+# Architecture
 
-## 组件分层
+## Top-Level Layout
 
 ```mermaid
 flowchart TD
-  UI["apps/operator-web"] --> API["apps/runner"]
-  API --> Auth["AuthService"]
-  API --> Store["RunStore / LiveSessionStore"]
-  API --> Agent["packages/runner-core"]
-  Agent --> Tools["toolRegistry"]
-  Tools --> Sidecar["packages/desktop-runtime"]
-  Sidecar --> PS["agents/sidecar-win/Invoke-Sidecar.ps1"]
-  Agent --> Models["OpenAI API / Codex backend"]
-  Store --> Disk["data/"]
+  Web["apps/operator-web"] --> Runner["apps/runner"]
+  Runner --> Auth["AuthService"]
+  Runner --> Stores["RunStore / LiveSessionStore"]
+  Runner --> Logs["LogCollector"]
+  Runner --> Memory["MemoryManager"]
+  Runner --> Core["packages/runner-core"]
+  Core --> Router["instructionClassifier"]
+  Core --> Planner["taskPlanner"]
+  Core --> DesktopLoop["desktopAgent"]
+  Core --> CliLoop["piAgent"]
+  DesktopLoop --> Browser["packages/browser-runtime"]
+  DesktopLoop --> Desktop["packages/desktop-runtime"]
+  Desktop --> Sidecar["agents/sidecar-win/Invoke-Sidecar.ps1"]
+  Browser --> Chromium["Chrome / Edge / Brave"]
+  Sidecar --> Windows["Interactive Windows Session"]
+  Stores --> Data["data/"]
+  Memory --> Data
+  Logs --> Data
+  Core --> Models["OpenAI API / Codex backend"]
 ```
 
-## 组件职责
+## Responsibilities By Area
 
 ### `apps/operator-web`
 
-浏览器控制台。负责：
-- 展示桌面截图
-- 展示窗口列表和事件流
-- 创建 live session
-- 发送实时指令
-- 发起 Codex OAuth 登录
+The browser control panel. It is responsible for:
+
+- creating live sessions
+- observing the desktop
+- sending live instructions
+- rendering event streams, screenshots, logs, history, and memory views
 
 ### `apps/runner`
 
-系统入口服务。负责：
-- 暴露 HTTP API
-- 持久化 run/live session
-- 提供 SSE 事件流
-- 管理认证状态
-- 调度 agent loop
+The local HTTP entrypoint. It is responsible for:
+
+- exposing the API surface
+- restoring and persisting runs and live sessions
+- managing auth selection
+- wiring agent loops to storage and SSE streams
+- exposing logs, memory, history, and replay downloads
 
 ### `packages/runner-core`
 
-智能执行层。负责：
-- 构建 prompt
-- 暴露 function tools
-- 在回合之间整理 history
-- 解析模型输出
-- 决定何时继续、何时结束
+The execution orchestration layer. It is responsible for:
+
+- routing instructions to `cli`, `desktop`, or `planner`
+- generating and updating task plans
+- building the tool registry
+- running the desktop loop
+- running the CLI loop
+- handling video frame streaming support
+
+### `packages/browser-runtime`
+
+The managed Chromium layer. It is responsible for:
+
+- finding an installed Chromium browser
+- launching and reusing a session per Novaper live session
+- exposing DOM-aware operations such as open, navigate, tab control, snapshot, click, type, keypress, scroll, wait, and read
 
 ### `packages/desktop-runtime`
 
-Node 与 Windows sidecar 的桥接层。负责：
-- 调用 PowerShell 脚本
-- 传递结构化命令
-- 处理截图与动作返回结果
+The Node bridge to the Windows sidecar. It is responsible for:
+
+- converting structured tool requests into sidecar RPC calls
+- returning screenshots, UIA results, action results, and machine metadata
 
 ### `agents/sidecar-win`
 
-与真实 Windows 会话交互。负责：
-- UI Automation
-- 鼠标键盘输入
-- 窗口和进程管理
-- 文件和截图能力
+The actual Windows execution layer. It is responsible for:
 
-## Live Session 数据流
+- screenshots
+- window enumeration and focusing
+- process management
+- file operations
+- UI Automation lookup and invocation
+- mouse and keyboard simulation
+
+### `packages/memory`
+
+The memory subsystem. It is responsible for:
+
+- app-aware context injection
+- long-term recall
+- working-memory snapshots across sessions
+- extracting durable memories from completed sessions
+
+## Live Session Flow
 
 ```mermaid
 sequenceDiagram
   participant User
   participant Web
   participant Runner
+  participant Router
   participant Agent
-  participant Model
+  participant Browser
   participant Sidecar
+  participant Model
 
-  User->>Web: 输入自然语言指令
+  User->>Web: Send instruction
   Web->>Runner: POST /api/live-sessions/:id/commands
-  Runner->>Sidecar: 截图 / 窗口状态
-  Runner->>Agent: 当前指令 + 当前桌面
-  Agent->>Model: instructions + history + tools
-  Model->>Agent: message / function_call
-  Agent->>Sidecar: 调工具
-  Sidecar-->>Agent: tool result
-  Agent->>Runner: 事件、状态、总结
-  Runner-->>Web: SSE 事件流
+  Runner->>Router: classifyInstruction()
+  Router-->>Runner: desktop / cli / planner
+  Runner->>Agent: start selected loop
+  Agent->>Model: developer prompt + tools + input
+  Model-->>Agent: message / function_call / computer_call
+  Agent->>Browser: browser_* tools when task is on a web page
+  Agent->>Sidecar: desktop tools for Windows interaction
+  Browser-->>Agent: DOM-aware result
+  Sidecar-->>Agent: screenshot / UIA / action result
+  Agent->>Runner: events + summary + latest screenshot
+  Runner-->>Web: SSE updates
 ```
 
-## 认证架构
+## Routing Model
 
-Novaper 支持两种 provider：
+The runner uses three execution routes:
 
-### 1. `api-key`
+- `desktop`: standard live desktop flow
+- `cli`: shell/file-oriented path through `drivePiAgent`
+- `planner`: decomposes a complex instruction into subtasks, then executes each subtask with either the desktop or CLI path
 
-- 通过 `OPENAI_API_KEY` 初始化官方 OpenAI SDK。
-- 可以使用官方 Responses API 和官方 `computer` tool。
-- 更贴近公开文档能力。
+This means one live instruction can become a multi-step plan while still producing one coherent session history.
 
-### 2. `codex-oauth`
+## Tool Selection Strategy
 
-- 通过本地 OAuth 回调获取 ChatGPT Plus/Pro 的 Codex 登录态。
-- 使用自定义 transport 访问 Codex backend。
-- 不依赖官方 `computer` tool。
-- 更依赖 Novaper 自己的 function tools 与视觉输入。
+The live developer prompt in `apps/runner/src/server.ts` now encodes this preference order:
 
-## 为什么需要自定义 Codex transport
+1. `browser_*` tools for web pages in Chromium browsers
+2. UI Automation and deterministic desktop tools
+3. process, file, and window tools
+4. `desktop_actions` for coordinate-based fallback
+5. official `computer` tool when the provider supports it
 
-Codex OAuth 路径并不完全等同于公开 OpenAI SDK 接口。当前实现专门处理了这些差异：
-- 请求必须带 `instructions`
-- 请求必须开启 `stream`
-- 不支持 `previous_response_id`
-- 不支持官方 `computer` tool
-- 需要自行维护本地 history
+This order matches the actual implementation and is important for reliability.
 
-因此 `apps/runner/src/codexResponsesClient.ts` 单独承担了兼容层职责。
+## Persistence Model
 
-## 数据落盘
+### Runs
 
-运行数据保存在 `data/`：
-- `data/auth`：OAuth 凭据
-- `data/live-sessions`：实时会话状态、事件和截图
-- `data/runs`：场景执行数据与 replay 归档
+Stored under `data/runs/<run-id>/`.
 
-发布仓库时，这些目录默认忽略运行时内容，只保留占位文件。
+Typical artifacts:
 
-## 关键设计选择
+- `run.json`
+- `events.jsonl`
+- screenshots
+- replay zip
 
-### 1. 先工具，后视觉
+### Live Sessions
 
-能稳定调用的结构化工具优先于视觉点按。这样更快、更少误点，也更容易复盘。
+Stored under `data/live-sessions/<session-id>/`.
 
-### 2. 视觉 fallback 作为保底能力
+Typical artifacts:
 
-一旦 UIA 失败，仍然可以通过截图加 `desktop_actions` 完成微信、WPS 一类应用的操作。
+- `session.json`
+- `events.jsonl`
+- screenshots
 
-### 3. 所有动作都可追踪
+### Memory
 
-Novaper 不走“黑箱执行”，每一轮都会写入事件流，便于你在控制台或 replay 中还原问题。
+Stored under `data/memory/`.
+
+Includes:
+
+- app profiles
+- global memory entries
+- session snapshots
+
+### Logs
+
+Stored under `data/logs/` as daily JSONL files.
+
+## Auth Architecture
+
+Novaper supports two auth providers:
+
+- `api-key`: official OpenAI SDK path
+- `codex-oauth`: custom transport for the Codex backend, with local history and tool compatibility handling
+
+The key compatibility layer is `apps/runner/src/codexResponsesClient.ts`. That module keeps Codex OAuth requests aligned with the backend's actual behavior instead of assuming parity with the official OpenAI API.

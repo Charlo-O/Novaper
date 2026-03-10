@@ -1,5 +1,6 @@
 import type { DesktopSidecar } from "../../desktop-runtime/src/sidecar.js";
 import type { ComputerAction } from "../../desktop-runtime/src/types.js";
+import type { BrowserSessionManager } from "../../browser-runtime/src/browserSessionManager.js";
 
 export interface ToolDefinition {
   name: string;
@@ -91,8 +92,219 @@ function truncateResult(result: unknown): unknown {
   };
 }
 
-export function createToolRegistry(sidecar: DesktopSidecar): ToolDefinition[] {
+export function createToolRegistry(
+  sidecar: DesktopSidecar,
+  options?: {
+    browserSessionManager?: BrowserSessionManager;
+    browserSessionId?: string;
+  },
+): ToolDefinition[] {
+  const browserTools: ToolDefinition[] = [];
+  if (options?.browserSessionManager && options.browserSessionId) {
+    const browserSessionManager = options.browserSessionManager;
+    const browserSessionId = options.browserSessionId;
+
+    browserTools.push(
+      {
+        name: "browser_open",
+        description: "Open or reuse a managed Chromium browser session for this operator. Use this before DOM-based browser work.",
+        parameters: {
+          type: "object",
+          additionalProperties: false,
+          properties: {
+            url: { type: "string" },
+            newTab: { type: "boolean" },
+          },
+        },
+        execute: async (args) =>
+          browserSessionManager.open(browserSessionId, {
+            url: typeof args.url === "string" ? args.url : undefined,
+            newTab: args.newTab === true,
+          }),
+      },
+      {
+        name: "browser_tabs",
+        description: "List, open, switch, or close browser tabs in the managed Chromium session.",
+        parameters: {
+          type: "object",
+          additionalProperties: false,
+          required: ["action"],
+          properties: {
+            action: {
+              type: "string",
+              enum: ["list", "switch", "new", "close"],
+            },
+            index: { type: "number" },
+            url: { type: "string" },
+          },
+        },
+        execute: async (args) =>
+          browserSessionManager.tabs(browserSessionId, {
+            action: String(args.action) as "list" | "switch" | "new" | "close",
+            index: typeof args.index === "number" ? args.index : undefined,
+            url: typeof args.url === "string" ? args.url : undefined,
+          }),
+      },
+      {
+        name: "browser_navigate",
+        description: "Navigate the active browser tab to a URL.",
+        parameters: {
+          type: "object",
+          additionalProperties: false,
+          required: ["url"],
+          properties: {
+            url: { type: "string" },
+          },
+        },
+        execute: async (args) => browserSessionManager.navigate(browserSessionId, { url: String(args.url) }),
+      },
+      {
+        name: "browser_snapshot",
+        description: "Inspect the active page using DOM data. Returns tabs, page metadata, actionable elements, and an optional text preview.",
+        parameters: {
+          type: "object",
+          additionalProperties: false,
+          properties: {
+            maxElements: { type: "number" },
+            includeText: { type: "boolean" },
+            textLimit: { type: "number" },
+          },
+        },
+        execute: async (args) =>
+          truncateResult(
+            await browserSessionManager.snapshot(browserSessionId, {
+              maxElements: typeof args.maxElements === "number" ? args.maxElements : undefined,
+              includeText: args.includeText !== false,
+              textLimit: typeof args.textLimit === "number" ? args.textLimit : undefined,
+            }),
+          ),
+      },
+      {
+        name: "browser_click",
+        description: "Click an element in the active page by CSS selector, visible text, or page coordinates.",
+        parameters: {
+          type: "object",
+          additionalProperties: false,
+          properties: {
+            selector: { type: "string" },
+            text: { type: "string" },
+            index: { type: "number" },
+            button: { type: "string", enum: ["left", "right"] },
+            x: { type: "number" },
+            y: { type: "number" },
+          },
+        },
+        execute: async (args) =>
+          browserSessionManager.click(browserSessionId, {
+            selector: typeof args.selector === "string" ? args.selector : undefined,
+            text: typeof args.text === "string" ? args.text : undefined,
+            index: typeof args.index === "number" ? args.index : undefined,
+            button: args.button === "right" ? "right" : "left",
+            x: typeof args.x === "number" ? args.x : undefined,
+            y: typeof args.y === "number" ? args.y : undefined,
+          }),
+      },
+      {
+        name: "browser_type",
+        description: "Type into the active page by selector or current focus. Use clear=true for replacing existing text.",
+        parameters: {
+          type: "object",
+          additionalProperties: false,
+          required: ["text"],
+          properties: {
+            selector: { type: "string" },
+            text: { type: "string" },
+            clear: { type: "boolean" },
+            submit: { type: "boolean" },
+          },
+        },
+        execute: async (args) =>
+          browserSessionManager.type(browserSessionId, {
+            selector: typeof args.selector === "string" ? args.selector : undefined,
+            text: String(args.text ?? ""),
+            clear: args.clear === true,
+            submit: args.submit === true,
+          }),
+      },
+      {
+        name: "browser_press_keys",
+        description: "Send keyboard shortcuts to the active browser tab, for example Ctrl+L or Ctrl+Enter.",
+        parameters: {
+          type: "object",
+          additionalProperties: false,
+          required: ["keys"],
+          properties: {
+            keys: {
+              type: "array",
+              items: { type: "string" },
+            },
+          },
+        },
+        execute: async (args) =>
+          browserSessionManager.pressKeys(browserSessionId, {
+            keys: Array.isArray(args.keys) ? args.keys.map((key) => String(key)) : [],
+          }),
+      },
+      {
+        name: "browser_wait_for",
+        description: "Wait for a selector, page text, or a fixed timeout in the active browser tab.",
+        parameters: {
+          type: "object",
+          additionalProperties: false,
+          properties: {
+            selector: { type: "string" },
+            text: { type: "string" },
+            timeoutMs: { type: "number" },
+          },
+        },
+        execute: async (args) =>
+          browserSessionManager.waitFor(browserSessionId, {
+            selector: typeof args.selector === "string" ? args.selector : undefined,
+            text: typeof args.text === "string" ? args.text : undefined,
+            timeoutMs: typeof args.timeoutMs === "number" ? args.timeoutMs : undefined,
+          }),
+      },
+      {
+        name: "browser_scroll",
+        description: "Scroll the active browser tab by pixel offsets.",
+        parameters: {
+          type: "object",
+          additionalProperties: false,
+          properties: {
+            x: { type: "number" },
+            y: { type: "number" },
+          },
+        },
+        execute: async (args) =>
+          browserSessionManager.scroll(browserSessionId, {
+            x: typeof args.x === "number" ? args.x : undefined,
+            y: typeof args.y === "number" ? args.y : undefined,
+          }),
+      },
+      {
+        name: "browser_read",
+        description: "Read visible text from the page or a specific selector in the active browser tab.",
+        parameters: {
+          type: "object",
+          additionalProperties: false,
+          properties: {
+            selector: { type: "string" },
+            maxLength: { type: "number" },
+          },
+        },
+        execute: async (args) =>
+          truncateResult(
+            await browserSessionManager.read(browserSessionId, {
+              selector: typeof args.selector === "string" ? args.selector : undefined,
+              maxLength: typeof args.maxLength === "number" ? args.maxLength : undefined,
+            }),
+          ),
+      },
+    );
+  }
+
   return [
+    ...browserTools,
     {
       name: "list_windows",
       description: "List visible top-level windows and identify the current foreground window. Use this before interacting with desktop apps.",
@@ -396,6 +608,11 @@ export function createToolRegistry(sidecar: DesktopSidecar): ToolDefinition[] {
       },
       execute: async (args) => {
         const query = encodeURIComponent(String(args.query));
+        if (options?.browserSessionManager && options.browserSessionId) {
+          return options.browserSessionManager.open(options.browserSessionId, {
+            url: `https://www.google.com/search?q=${query}`,
+          });
+        }
         return sidecar.launchProcess({
           command: "cmd",
           args: ["/c", "start", `https://www.google.com/search?q=${query}`],

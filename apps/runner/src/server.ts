@@ -16,6 +16,7 @@ import { getProxyStatus } from "./networkProxy.js";
 import { LogCollector } from "./logCollector.js";
 import { MemoryManager } from "../../../packages/memory/src/memoryManager.js";
 import { FrameStreamer } from "../../../packages/runner-core/src/videoObserver.js";
+import { BrowserSessionManager } from "../../../packages/browser-runtime/src/browserSessionManager.js";
 
 function normalizeRequestedProvider(input: unknown) {
   return input === "api-key" || input === "codex-oauth" ? input : undefined;
@@ -30,7 +31,8 @@ function buildLiveDeveloperPrompt() {
     "You are a live Windows desktop assistant similar to an interactive computer-use operator.",
     "The human is watching the current desktop and will send one instruction at a time.",
     "For every instruction, inspect the current desktop state before acting.",
-    "Prefer tools in this order: 1) UI Automation and deterministic tools, 2) process/file/window tools, 3) desktop_actions for coordinate-based visual fallback, 4) the computer tool when available.",
+    "Prefer tools in this order: 1) browser_* tools for web pages in Chrome, Edge, or other Chromium browsers, 2) UI Automation and deterministic desktop tools, 3) process/file/window tools, 4) desktop_actions for coordinate-based visual fallback, 5) the computer tool when available.",
+    "When the task is happening inside a web page, use browser_snapshot before interacting and prefer browser_click, browser_type, browser_press_keys, browser_tabs, and browser_read over desktop clicks.",
     "Never claim a desktop task is complete until you have used at least one tool during the current instruction.",
     "WeChat, WPS, and other Qt or custom-drawn apps often expose unreliable UI Automation trees. In those apps, prefer screenshot-driven desktop_actions over stubborn UIA retries.",
     "For chat apps such as WeChat, verify message delivery on the next screenshot. If the text is still in the input box, try the alternate send method such as Enter, Ctrl+Enter, or clicking the Send button.",
@@ -63,6 +65,7 @@ export async function createServer(config: {
   const liveStore = new LiveSessionStore(path.join(config.rootDir, "data", "live-sessions"));
   const sidecar = new DesktopSidecar();
   const authService = new AuthService(config.rootDir, config.openAIApiKey);
+  const browserSessionManager = new BrowserSessionManager();
   const scenarios = await loadScenarios(path.join(config.rootDir, "scenarios"));
   const scenarioMap = new Map(scenarios.map((scenario) => [scenario.manifest.id, scenario]));
 
@@ -488,6 +491,7 @@ export async function createServer(config: {
                   shouldStop: () => Boolean(liveStore.getSession(updated.id)?.stopRequested),
                   maxTurns: 20,
                   memoryManager,
+                  browserSessionManager,
                   sessionId: updated.id,
                 });
                 updateTaskStatus(plan, task.id, "completed", subResult.summary);
@@ -558,6 +562,7 @@ export async function createServer(config: {
             shouldStop: () => Boolean(liveStore.getSession(updated.id)?.stopRequested),
             maxTurns: 30,
             memoryManager,
+            browserSessionManager,
             sessionId: updated.id,
           });
 

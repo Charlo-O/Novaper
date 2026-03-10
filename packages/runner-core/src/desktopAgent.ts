@@ -3,6 +3,7 @@ import path from "node:path";
 import type { ResponseComputerToolCall, ResponseInputItem } from "openai/resources/responses/responses";
 import type { DesktopSidecar } from "../../desktop-runtime/src/sidecar.js";
 import type { ComputerAction } from "../../desktop-runtime/src/types.js";
+import type { BrowserSessionManager } from "../../browser-runtime/src/browserSessionManager.js";
 import { createToolRegistry } from "./toolRegistry.js";
 import type { ResponsesClient } from "./responsesClient.js";
 import type { MemoryManager } from "../../memory/src/memoryManager.js";
@@ -27,6 +28,7 @@ interface DriveDesktopAgentContext {
   onEvent: (event: DesktopAgentEvent) => Promise<void>;
   shouldStop?: () => boolean;
   memoryManager?: MemoryManager;
+  browserSessionManager?: BrowserSessionManager;
   sessionId?: string;
 }
 
@@ -134,9 +136,14 @@ export async function driveDesktopAgent(context: DriveDesktopAgentContext): Prom
   latestScreenshotUrl?: string;
 }> {
   const visualGroundingEnabled = context.client.supportsImageInput === true && context.client.supportsComputerTool === false;
+  const toolSessionId = context.sessionId ?? `ephemeral-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+  const toolDefinitions = createToolRegistry(context.sidecar, {
+    browserSessionManager: context.browserSessionManager,
+    browserSessionId: toolSessionId,
+  });
   const tools = [
     ...(context.client.supportsComputerTool === false ? [] : [{ type: "computer" as const }]),
-    ...createToolRegistry(context.sidecar).map((tool) => ({
+    ...toolDefinitions.map((tool) => ({
       type: "function" as const,
       name: tool.name,
       description: tool.description,
@@ -144,7 +151,7 @@ export async function driveDesktopAgent(context: DriveDesktopAgentContext): Prom
       parameters: tool.parameters,
     })),
   ];
-  const registry = new Map(createToolRegistry(context.sidecar).map((tool) => [tool.name, tool]));
+  const registry = new Map(toolDefinitions.map((tool) => [tool.name, tool]));
 
   let latestScreenshotUrl: string | undefined;
   let lastExecutedToolSignature: { name: string; signature: string } | undefined;
@@ -214,7 +221,7 @@ export async function driveDesktopAgent(context: DriveDesktopAgentContext): Prom
     if (functionCalls.length === 0 && computerCalls.length === 0) {
       if (executedToolCallCount === 0) {
         if (remindedToolUse) {
-          throw new Error("Model attempted to finish without using any desktop tools for the current instruction.");
+          throw new Error("Model attempted to finish without using any operator tools for the current instruction.");
         }
 
         remindedToolUse = true;
@@ -226,7 +233,7 @@ export async function driveDesktopAgent(context: DriveDesktopAgentContext): Prom
             {
               role: "user",
               content:
-                "You have not used any desktop tools for this instruction yet. Do not assume completion. Use at least one appropriate tool to inspect or act on the desktop, then verify the result before answering.",
+                "You have not used any operator tools for this instruction yet. Do not assume completion. Use at least one appropriate browser or desktop tool to inspect or act, then verify the result before answering.",
             },
           ],
         });

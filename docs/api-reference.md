@@ -1,69 +1,90 @@
-# Novaper HTTP API 参考
+# API Reference
 
-## 基础信息
+Base URL:
 
-- 默认地址：`http://127.0.0.1:3333`
-- 数据格式：`application/json`
-- 实时事件：SSE
+- `http://127.0.0.1:3333`
 
-## 系统接口
+Formats:
+
+- request and response payloads use JSON unless noted
+- streaming endpoints use Server-Sent Events
+
+## System
 
 ### `GET /api/system/health`
 
-用途：
-- 检查服务、sidecar、auth、proxy 是否正常
+Returns machine, auth, scenario count, and proxy health.
 
-返回要点：
-
-```json
-{
-  "ok": true,
-  "version": "0.1.0",
-  "machine": {},
-  "scenarios": 1,
-  "auth": {},
-  "proxy": {
-    "enabled": true,
-    "url": "http://127.0.0.1:7890",
-    "source": "NOVAPER_PROXY_URL"
-  }
-}
-```
-
-## 认证接口
+## Auth
 
 ### `GET /api/auth/status`
 
-用途：
-- 查看当前默认 provider 与各认证状态
+Returns the current auth status for the configured providers.
 
 ### `POST /api/auth/codex/login`
 
-用途：
-- 发起 Codex OAuth 登录
-
-返回：
-
-```json
-{
-  "authorizeUrl": "https://auth.openai.com/oauth/authorize?...",
-  "startedAt": "2026-03-09T08:28:11.936Z"
-}
-```
+Starts the local Codex OAuth flow.
 
 ### `POST /api/auth/codex/logout`
 
-用途：
-- 清除本地 Codex OAuth 凭据
+Clears stored Codex OAuth credentials.
 
-## Live Session 接口
+## Scenarios and Runs
+
+### `GET /api/scenarios`
+
+Lists available scenarios from `scenarios/`.
+
+### `GET /api/runs`
+
+Lists historical runs.
+
+### `GET /api/runs/:id`
+
+Returns a single run record and its events.
+
+### `POST /api/runs`
+
+Starts a new scenario run.
+
+Request body:
+
+```json
+{
+  "scenarioId": "notepad-hello",
+  "authProvider": "api-key",
+  "model": "gpt-5.4",
+  "input": {}
+}
+```
+
+### `POST /api/runs/:id/stop`
+
+Requests stop for a running scenario.
+
+### `POST /api/runs/:id/retry`
+
+Retries an existing run with the original scenario and input.
+
+### `GET /api/runs/:id/events`
+
+SSE stream of run events.
+
+### `GET /api/runs/:id/replay`
+
+Downloads the replay archive for a run.
+
+## Live Sessions
+
+### `GET /api/live-sessions`
+
+Lists live sessions.
 
 ### `POST /api/live-sessions`
 
-用途：
-- 创建实时桌面会话
+Creates a live session.
 
-请求示例：
+Request body:
 
 ```json
 {
@@ -72,113 +93,166 @@
 }
 ```
 
+### `GET /api/live-sessions/:id`
+
+Returns the live session record and full event history.
+
+### `GET /api/live-sessions/:id/events`
+
+SSE stream of live session events.
+
 ### `POST /api/live-sessions/:id/observe`
 
-用途：
-- 主动刷新当前桌面截图和窗口状态
+Captures the current desktop state.
+
+Response highlights:
+
+- updated session
+- machine heartbeat
+- visible windows
+- screenshot URL, width, and height
 
 ### `POST /api/live-sessions/:id/commands`
 
-用途：
-- 向某个实时会话发送一条新指令
+Submits one live instruction to the agent.
 
-请求示例：
+Request body:
 
 ```json
 {
-  "text": "打开微信并切到最近的聊天",
-  "authProvider": "codex-oauth"
+  "instruction": "Open Chrome and search for the latest OpenAI API pricing.",
+  "authProvider": "api-key",
+  "model": "gpt-5.4"
+}
+```
+
+Behavior:
+
+- rejects when another instruction is already executing
+- rejects when the session is waiting for confirmation
+- routes the instruction to `desktop`, `cli`, or `planner`
+
+### `POST /api/live-sessions/:id/confirm`
+
+Resolves a pending confirmation.
+
+Request body:
+
+```json
+{
+  "choice": "confirmed"
 }
 ```
 
 ### `POST /api/live-sessions/:id/stop`
 
-用途：
-- 请求停止当前动作链
+Requests stop for the current live execution.
 
-### `GET /api/live-sessions/:id/events`
+### `GET /api/live-sessions/:id/screen-stream`
 
-用途：
-- 订阅实时事件流
+SSE frame stream for near-live screenshots.
 
-事件类型包括：
+Payload shape:
+
+```json
+{
+  "timestamp": 1741580000000,
+  "width": 1920,
+  "height": 1080,
+  "image": "<base64>"
+}
+```
+
+## Logs
+
+### `GET /api/logs/files`
+
+Lists available log files from `data/logs/`.
+
+### `GET /api/logs/files/:filename`
+
+Returns one log file as plain text.
+
+### `GET /api/logs/stream`
+
+SSE stream of live log entries with catch-up.
+
+## Memory
+
+### `GET /api/memory/global`
+
+Returns global memory entries.
+
+### `GET /api/memory/apps`
+
+Returns app profiles.
+
+### `GET /api/memory/apps/:name`
+
+Returns one app profile by name.
+
+### `POST /api/memory`
+
+Creates a memory entry.
+
+Request body:
+
+```json
+{
+  "content": "User prefers Chrome over Edge for browser tasks.",
+  "category": "preference",
+  "appContext": "Chrome",
+  "tags": ["browser", "preference"],
+  "confidence": 0.9
+}
+```
+
+### `DELETE /api/memory/:id`
+
+Deletes one memory entry by id.
+
+## Unified History
+
+### `GET /api/history`
+
+Returns a merged list of live sessions and runs.
+
+Query params:
+
+- `limit`
+- `offset`
+
+### `GET /api/history/:id`
+
+Returns one history record. The record may be either a live session or a run.
+
+### `DELETE /api/history/:id`
+
+Deletes either a live session or a run.
+
+## Event Types
+
+Common SSE event types:
+
 - `status`
 - `log`
 - `message`
 - `tool_call`
 - `tool_result`
+- `computer_action`
 - `screenshot`
 - `error`
+- `agent_route`
 
-## Run 接口
+Important interpretation:
 
-### `GET /api/scenarios`
+- `tool_call`: the agent asked to invoke a tool
+- `tool_result`: the tool returned successfully or with structured failure detail
+- `computer_action`: low-level computer-tool action request
+- `agent_route`: whether the instruction was routed to `desktop`, `cli`, or `planner`
 
-用途：
-- 列出可运行场景
+## Notes
 
-### `POST /api/runs`
-
-用途：
-- 发起一个场景 run
-
-请求示例：
-
-```json
-{
-  "scenarioId": "notepad-hello",
-  "authProvider": "api-key",
-  "input": {}
-}
-```
-
-### `GET /api/runs`
-
-用途：
-- 列出历史 run
-
-### `GET /api/runs/:id`
-
-用途：
-- 获取某个 run 的详情和事件
-
-### `POST /api/runs/:id/stop`
-
-用途：
-- 停止 run
-
-### `POST /api/runs/:id/retry`
-
-用途：
-- 基于历史 run 重试
-
-### `GET /api/runs/:id/events`
-
-用途：
-- 订阅 run 的 SSE 事件流
-
-### `GET /api/runs/:id/replay`
-
-用途：
-- 下载 replay zip
-
-## SSE 使用说明
-
-客户端收到的每条事件都包含：
-- `id`
-- `at`
-- `type`
-- `level`
-- `message`
-- `payload`
-
-其中最关键的是：
-- `tool_call`：模型请求了哪个工具及其参数
-- `tool_result`：工具返回了什么
-- `screenshot`：产生了新的桌面截图
-- `error`：执行中断原因
-
-## 兼容性说明
-
-- `api-key` 路径更接近公开 OpenAI API。
-- `codex-oauth` 路径为自定义兼容层，不要假设它与官方 SDK 100% 等价。
+- `api-key` and `codex-oauth` do not have identical transport behavior
+- browser automation is exposed through internal tools, not direct HTTP endpoints
+- live-session commands must use `instruction`, not `text`
