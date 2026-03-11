@@ -429,6 +429,22 @@ function Get-KeyMap {
     "F11" = 0x7A
     "F12" = 0x7B
     "WIN" = 0x5B
+    "META" = 0x5B
+    "SUPER" = 0x5B
+    "COMMAND" = 0x5B
+    "CMD" = 0x5B
+    "LWIN" = 0x5B
+    "RWIN" = 0x5C
+    "INSERT" = 0x2D
+    "INS" = 0x2D
+    "CAPSLOCK" = 0x14
+    "NUMLOCK" = 0x90
+    "SCROLLLOCK" = 0x91
+    "PRINTSCREEN" = 0x2C
+    "PRTSC" = 0x2C
+    "PAUSE" = 0x13
+    "APPS" = 0x5D
+    "MENU" = 0x5D
   }
 }
 
@@ -453,7 +469,7 @@ function Send-KeyCombo {
     return
   }
 
-  $modifierNames = @("CTRL", "CONTROL", "SHIFT", "ALT", "WIN")
+  $modifierNames = @("CTRL", "CONTROL", "SHIFT", "ALT", "WIN", "META", "SUPER", "COMMAND", "CMD", "LWIN", "RWIN")
   $modifierCodes = [System.Collections.Generic.List[byte]]::new()
   $mainCodes = [System.Collections.Generic.List[byte]]::new()
 

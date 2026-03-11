@@ -264,8 +264,8 @@ export const en = {
       description: 'Self-hosted vLLM / SGLang services',
     },
     codex: {
-      name: 'Novaper',
-      description: 'Authenticate Novaper with Codex OAuth',
+      name: 'Codex',
+      description: 'Authenticate with Codex OAuth',
     },
   },
   toasts: {

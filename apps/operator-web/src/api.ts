@@ -1,4 +1,4 @@
-// Adapted for Novaper integration.
+// Adapted for Codex integration.
 
 export function getErrorMessage(error: unknown): string {
   if (error instanceof Error) {
@@ -767,7 +767,12 @@ async function resolvePreferredAuthProvider(mode: SessionMode): Promise<
       throw new Error('No auth provider is available. 请先去认证。');
     }
     return 'codex-oauth';
-    throw new Error('No auth provider is available. 请先去认证。');
+  }
+  // When custom base_url + api_key are configured, the backend will use them
+  // directly via getCustomResponsesClient — return 'api-key' as a passthrough.
+  const customApi = getCustomApiParams(mode);
+  if (customApi.baseUrl && customApi.apiKey) {
+    return 'api-key';
   }
   if (auth.providers.apiKey.configured) {
     return 'api-key';
@@ -776,7 +781,26 @@ async function resolvePreferredAuthProvider(mode: SessionMode): Promise<
     return 'codex-oauth';
   }
   throw new Error('No auth provider is available. 请先去认证。');
-  throw new Error('No auth provider is available. 请先去认证。');
+}
+
+function getCustomApiParams(mode: SessionMode): { baseUrl?: string; apiKey?: string } {
+  const config = getStoredConfig();
+  if (mode === 'layered') {
+    if (config.decision_provider === 'codex') return {};
+    const baseUrl = config.decision_base_url?.trim();
+    const apiKey = config.decision_api_key?.trim();
+    if (baseUrl && apiKey) return { baseUrl, apiKey };
+    // Fall back to vision config
+    const vBaseUrl = config.base_url?.trim();
+    const vApiKey = config.api_key?.trim();
+    if (vBaseUrl && vApiKey) return { baseUrl: vBaseUrl, apiKey: vApiKey };
+    return {};
+  }
+  if (config.vision_provider === 'codex') return {};
+  const baseUrl = config.base_url?.trim();
+  const apiKey = config.api_key?.trim();
+  if (baseUrl && apiKey) return { baseUrl, apiKey };
+  return {};
 }
 
 async function fetchSystemHealth(): Promise<{
@@ -1356,6 +1380,7 @@ export function sendMessageStream(
         finishWithError('Live session stream disconnected.', false);
       };
 
+      const customApi = getCustomApiParams('classic');
       await fetchJson(`/api/live-sessions/${sessionId}/commands`, {
         method: 'POST',
         headers: {
@@ -1365,6 +1390,7 @@ export function sendMessageStream(
           instruction: message,
           model,
           authProvider,
+          ...customApi,
         }),
       });
     } catch (error) {
@@ -1946,6 +1972,7 @@ export function sendLayeredMessageStream(
         finishWithError('Live session stream disconnected.');
       };
 
+      const customApi = getCustomApiParams('layered');
       await fetchJson(`/api/live-sessions/${sessionId}/commands`, {
         method: 'POST',
         headers: {
@@ -1955,6 +1982,7 @@ export function sendLayeredMessageStream(
           instruction: message,
           model,
           authProvider,
+          ...customApi,
         }),
       });
     } catch (error) {

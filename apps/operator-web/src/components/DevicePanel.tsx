@@ -47,6 +47,7 @@ import {
   TooltipContent,
   TooltipTrigger,
 } from '@/components/ui/tooltip';
+import { MarkdownContent } from './MarkdownContent';
 
 interface ActionPayload {
   action?: string;
@@ -804,9 +805,10 @@ export function DevicePanel({
                                 Step {idx + 1}
                               </span>
                             </div>
-                            <p className="text-sm whitespace-pre-wrap text-slate-700 dark:text-slate-300">
-                              {stepSummary}
-                            </p>
+                            <MarkdownContent
+                              content={stepSummary}
+                              className="text-sm text-slate-700 dark:text-slate-300"
+                            />
 
                             {stepScreenshot && (
                               <div className="mt-3 relative inline-block border border-slate-200 dark:border-slate-700 rounded overflow-hidden shadow-sm">
@@ -942,10 +944,10 @@ export function DevicePanel({
                               Thinking...
                             </span>
                           </div>
-                          <p className="text-sm whitespace-pre-wrap text-slate-700 dark:text-slate-300">
-                            {message.currentThinking}
+                          <div className="text-sm text-slate-700 dark:text-slate-300">
+                            <MarkdownContent content={message.currentThinking} />
                             <span className="inline-block w-1 h-4 ml-0.5 bg-[#1d9bf0] animate-pulse" />
-                          </p>
+                          </div>
                         </div>
                       )}
 
@@ -968,10 +970,11 @@ export function DevicePanel({
                                 : 'text-green-500'
                             }`}
                           />
-                          <div>
-                            <p className="whitespace-pre-wrap">
-                              {message.content}
-                            </p>
+                          <div className="min-w-0">
+                            <MarkdownContent
+                              content={message.content}
+                              className="text-sm"
+                            />
                             {message.steps !== undefined && (
                               <p className="text-xs mt-2 opacity-60 text-slate-500 dark:text-slate-400">
                                 {message.steps} steps completed

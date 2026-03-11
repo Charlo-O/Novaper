@@ -38,6 +38,7 @@ import {
   Eye,
 } from 'lucide-react';
 import { useTranslation } from '../lib/i18n-context';
+import { MarkdownContent } from '../components/MarkdownContent';
 
 export const Route = createFileRoute('/history')({
   component: HistoryComponent,
@@ -475,9 +476,10 @@ function HistoryComponent() {
                                     <p className="text-xs font-medium text-slate-500 dark:text-slate-400 mb-1">
                                       {t.historyPage.thinkingLabel || '思考'}
                                     </p>
-                                    <p className="text-sm text-slate-700 dark:text-slate-300 whitespace-pre-wrap">
-                                      {msg.thinking}
-                                    </p>
+                                    <MarkdownContent
+                                      content={msg.thinking}
+                                      className="text-sm text-slate-700 dark:text-slate-300"
+                                    />
                                   </div>
                                 )}
 
@@ -524,9 +526,10 @@ function HistoryComponent() {
                   >
                     {t.historyPage.resultLabel || '结果'}
                   </p>
-                  <p className="text-sm text-slate-900 dark:text-slate-100">
-                    {selectedRecord.final_message}
-                  </p>
+                  <MarkdownContent
+                    content={selectedRecord.final_message}
+                    className="text-sm text-slate-900 dark:text-slate-100"
+                  />
                 </div>
 
                 {/* Metadata */}

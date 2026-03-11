@@ -381,9 +381,17 @@ export async function createServer(config: {
       return;
     }
 
+    const requestedProvider = normalizeRequestedProvider(request.body?.authProvider) ?? session.authProvider;
+    const customBaseUrl = typeof request.body?.baseUrl === "string" ? request.body.baseUrl.trim() : "";
+    const customApiKey = typeof request.body?.apiKey === "string" ? request.body.apiKey.trim() : "";
+
     let auth;
     try {
-      auth = await authService.getResponsesClient(normalizeRequestedProvider(request.body?.authProvider) ?? session.authProvider);
+      if (requestedProvider !== "codex-oauth" && customBaseUrl && customApiKey) {
+        auth = authService.getCustomResponsesClient(customBaseUrl, customApiKey);
+      } else {
+        auth = await authService.getResponsesClient(requestedProvider);
+      }
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       response.status(authErrorStatus(message)).json({ error: message });

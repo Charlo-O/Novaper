@@ -1,4 +1,4 @@
-export type AuthProvider = "api-key" | "codex-oauth";
+export type AuthProvider = "api-key" | "codex-oauth" | "custom-api";
 
 export type RunStatus =
   | "Draft"

@@ -21,6 +21,7 @@ import {
   ListChecks,
   Square,
 } from 'lucide-react';
+import { MarkdownContent } from './MarkdownContent';
 import type { Workflow, HistoryRecordResponse } from '../api';
 import {
   abortLayeredAgentChat,
@@ -592,15 +593,18 @@ export function ChatKitPanel({
                                         <p className="text-xs text-slate-500 mb-1 font-medium">
                                           执行结果:
                                         </p>
-                                        <pre className="text-xs text-slate-600 dark:text-slate-400 overflow-x-auto whitespace-pre-wrap">
-                                          {typeof step.toolResult === 'string'
-                                            ? step.toolResult
-                                            : JSON.stringify(
-                                                step.toolResult,
-                                                null,
-                                                2
-                                              )}
-                                        </pre>
+                                        <MarkdownContent
+                                          content={
+                                            typeof step.toolResult === 'string'
+                                              ? step.toolResult
+                                              : JSON.stringify(
+                                                  step.toolResult,
+                                                  null,
+                                                  2
+                                                )
+                                          }
+                                          className="text-xs text-slate-600 dark:text-slate-400"
+                                        />
                                       </div>
                                     )}
                                 </div>
@@ -630,9 +634,10 @@ export function ChatKitPanel({
                                   }`}
                                 />
                               )}
-                              <p className="whitespace-pre-wrap">
-                                {message.content}
-                              </p>
+                              <MarkdownContent
+                                content={message.content}
+                                className="text-sm min-w-0"
+                              />
                             </div>
                           </div>
                         </div>

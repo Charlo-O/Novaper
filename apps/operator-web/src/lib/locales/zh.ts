@@ -179,8 +179,8 @@ export const zh = {
       workflowButtonDesc: '选择并快速执行预设的工作流任务',
     },
     codex: {
-      name: 'Novaper',
-      description: '使用 Codex OAuth 认证 Novaper',
+      name: 'Codex',
+      description: '使用 Codex OAuth 认证',
     },
   },
   deviceMonitor: {
@@ -263,8 +263,8 @@ export const zh = {
       description: 'vLLM / SGLang 等自建服务',
     },
     codex: {
-      name: 'Novaper',
-      description: '使用 Codex OAuth 认证 Novaper',
+      name: 'Codex',
+      description: '使用 Codex OAuth 认证',
     },
   },
   toasts: {

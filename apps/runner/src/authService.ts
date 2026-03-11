@@ -4,7 +4,7 @@ import { promises as fs } from "node:fs";
 import http from "node:http";
 import path from "node:path";
 import type { AuthProvider } from "../../../packages/replay-schema/src/types.js";
-import { createResponsesClient, type ResponsesClient } from "../../../packages/runner-core/src/responsesClient.js";
+import { createResponsesClient, createChatCompletionsClient, type ResponsesClient } from "../../../packages/runner-core/src/responsesClient.js";
 import { createCodexResponsesClient } from "./codexResponsesClient.js";
 import { getProxyDispatcher } from "./networkProxy.js";
 
@@ -103,10 +103,10 @@ function buildSuccessPage(message: string) {
   return [
     "<!doctype html>",
     "<html lang=\"en\">",
-    "<head><meta charset=\"utf-8\" /><meta name=\"viewport\" content=\"width=device-width, initial-scale=1\" /><title>Novaper Auth</title></head>",
+    "<head><meta charset=\"utf-8\" /><meta name=\"viewport\" content=\"width=device-width, initial-scale=1\" /><title>Codex Auth</title></head>",
     "<body style=\"font-family:Segoe UI,sans-serif;padding:24px;\">",
     `<p>${message}</p>`,
-    "<p>You can return to Novaper.</p>",
+    "<p>You can return to Codex.</p>",
     "</body></html>",
   ].join("");
 }
@@ -179,7 +179,7 @@ export class AuthService {
     authorizeUrl.searchParams.set("state", state);
     authorizeUrl.searchParams.set("id_token_add_organizations", "true");
     authorizeUrl.searchParams.set("codex_cli_simplified_flow", "true");
-    authorizeUrl.searchParams.set("originator", "novaper");
+    authorizeUrl.searchParams.set("originator", "codex");
 
     const server = http.createServer((request, response) => {
       void this.handleCodexCallback(request, response);
@@ -248,6 +248,26 @@ export class AuthService {
     }
 
     throw new Error("No auth provider is available. Configure OPENAI_API_KEY or login with Codex OAuth.");
+  }
+
+  getCustomResponsesClient(baseUrl: string, apiKey: string): { authProvider: "custom-api"; client: ResponsesClient } {
+    const dispatcher = getProxyDispatcher();
+    type OpenAIClientOptions = ConstructorParameters<typeof OpenAI>[0];
+    const fetchOptions = dispatcher ? ({ dispatcher } as NonNullable<OpenAIClientOptions>["fetchOptions"]) : undefined;
+
+    const getClient = async () =>
+      new OpenAI({
+        apiKey,
+        baseURL: baseUrl,
+        organization: null,
+        project: null,
+        fetchOptions,
+      });
+
+    return {
+      authProvider: "custom-api",
+      client: createChatCompletionsClient(getClient),
+    };
   }
 
   async getResponsesClient(requested?: string | null): Promise<{ authProvider: AuthProvider; client: ResponsesClient }> {

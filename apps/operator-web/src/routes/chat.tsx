@@ -56,7 +56,7 @@ import {
 import { useTranslation } from '../lib/i18n-context';
 
 const CODEX_PRESET_NAME = 'codex';
-const CODEX_AGENT_NAME = 'novaper-agent';
+const CODEX_AGENT_NAME = 'codex-agent';
 const CODEX_BACKEND_AGENT_NAME = 'glm-async';
 const CODEX_DEFAULT_MODEL = 'gpt-5.4';
 
@@ -138,8 +138,8 @@ const AGENT_PRESETS = [
   },
   {
     name: CODEX_AGENT_NAME,
-    displayName: 'Novaper Agent',
-    description: 'Use Codex OAuth through Novaper.',
+    displayName: 'Codex Agent',
+    description: 'Use Codex OAuth through Codex.',
     icon: ShieldCheck,
     defaultConfig: {},
   },
@@ -301,10 +301,7 @@ function ChatComponent() {
   const codexLoginBusy = Boolean(codexAuth?.loginInProgress || authPending);
   const isVisionCodeX = tempConfig.vision_provider === CODEX_PRESET_NAME;
   const isDecisionCodeX = tempConfig.decision_provider === CODEX_PRESET_NAME;
-  const isUsingCodeX = isVisionCodeX || isDecisionCodeX;
-  const availableAgentPresets = isUsingCodeX
-    ? AGENT_PRESETS.filter(preset => preset.name === CODEX_AGENT_NAME)
-    : AGENT_PRESETS;
+  const availableAgentPresets = AGENT_PRESETS;
   const savedVisionProvider = config?.vision_provider || inferVisionProvider(config);
   const isConfigured =
     savedVisionProvider === CODEX_PRESET_NAME
@@ -458,15 +455,18 @@ function ChatComponent() {
   }, [codexAuth?.loginInProgress, refreshAuthStatus]);
 
   useEffect(() => {
-    if (!isUsingCodeX || tempConfig.agent_type === CODEX_AGENT_NAME) {
+    if (!isVisionCodeX || tempConfig.agent_type === CODEX_AGENT_NAME) {
       return;
     }
-    setTempConfig(prev => ({
-      ...prev,
-      agent_type: CODEX_AGENT_NAME,
-      agent_config_params: {},
-    }));
-  }, [isUsingCodeX, tempConfig.agent_type]);
+    // When vision provider is codex, default to Codex Agent but don't force it
+    if (isVisionCodeX && tempConfig.agent_type !== CODEX_AGENT_NAME) {
+      setTempConfig(prev => ({
+        ...prev,
+        agent_type: CODEX_AGENT_NAME,
+        agent_config_params: {},
+      }));
+    }
+  }, [isVisionCodeX, tempConfig.agent_type]);
 
   const loadDevices = useCallback(async () => {
     try {
@@ -584,8 +584,8 @@ function ChatComponent() {
       showToast(t.chat.baseUrlRequired, 'error');
       return;
     }
-    if (isUsingCodeX && !codexAuthenticated) {
-      showToast('请先完成 Novaper 认证', 'error');
+    if (isVisionCodeX && !codexAuthenticated) {
+      showToast('请先完成 Codex 认证', 'error');
       return;
     }
 
@@ -595,7 +595,7 @@ function ChatComponent() {
           ? CODEX_BACKEND_AGENT_NAME
           : tempConfig.agent_type;
       const nextAgentConfig =
-        isUsingCodeX || Object.keys(tempConfig.agent_config_params).length === 0
+        Object.keys(tempConfig.agent_config_params).length === 0
           ? undefined
           : tempConfig.agent_config_params;
       const nextModelName = isVisionCodeX
@@ -637,7 +637,6 @@ function ChatComponent() {
       setTempConfig(prev => ({
         ...prev,
         model_name: nextModelName,
-        agent_type: isUsingCodeX ? CODEX_AGENT_NAME : prev.agent_type,
         decision_model_name: nextDecisionModelName || '',
       }));
 
@@ -850,15 +849,16 @@ function ChatComponent() {
                 </div>
               </div>
 
-              <div className="space-y-2">
-                <Label htmlFor="base_url">{t.chat.baseUrl} *</Label>
+              <div className={`space-y-2 ${isVisionCodeX ? 'opacity-50 pointer-events-none' : ''}`}>
+                <Label htmlFor="base_url">{t.chat.baseUrl} {!isVisionCodeX && '*'}</Label>
                 <Input
                   id="base_url"
-                  value={tempConfig.base_url}
+                  value={isVisionCodeX ? '' : tempConfig.base_url}
                   onChange={e =>
                     setTempConfig({ ...tempConfig, base_url: e.target.value })
                   }
-                  placeholder="http://localhost:8080/v1"
+                  disabled={isVisionCodeX}
+                  placeholder={isVisionCodeX ? 'Codex OAuth 无需配置' : 'http://localhost:8080/v1'}
                 />
                 {!tempConfig.base_url && !isVisionCodeX && (
                   <p className="text-xs text-red-500 flex items-center gap-1">
@@ -866,27 +866,23 @@ function ChatComponent() {
                     {t.chat.baseUrlRequired}
                   </p>
                 )}
-                {false && !tempConfig.base_url && codexAuthenticated && (
-                  <p className="text-xs text-slate-500 dark:text-slate-400">
-                    已启用 Codex OAuth，Base URL 可以留空。
-                  </p>
-                )}
               </div>
 
-              <div className="space-y-2">
+              <div className={`space-y-2 ${isVisionCodeX ? 'opacity-50 pointer-events-none' : ''}`}>
                 <Label htmlFor="api_key">{t.chat.apiKey}</Label>
                 <div className="relative">
                   <Input
                     id="api_key"
                     type={showApiKey ? 'text' : 'password'}
-                    value={tempConfig.api_key}
+                    value={isVisionCodeX ? '' : tempConfig.api_key}
                     onChange={e =>
                       setTempConfig({
                         ...tempConfig,
                         api_key: e.target.value,
                       })
                     }
-                    placeholder="Leave empty if not required"
+                    disabled={isVisionCodeX}
+                    placeholder={isVisionCodeX ? 'Codex OAuth 无需配置' : 'Leave empty if not required'}
                     className="pr-10"
                   />
                   <Button
@@ -894,6 +890,7 @@ function ChatComponent() {
                     variant="ghost"
                     size="icon"
                     onClick={() => setShowApiKey(!showApiKey)}
+                    disabled={isVisionCodeX}
                     className="absolute right-0 top-0 h-full px-3 hover:bg-transparent"
                   >
                     {showApiKey ? (
@@ -905,17 +902,18 @@ function ChatComponent() {
                 </div>
               </div>
 
-              <div className="space-y-2">
+              <div className={`space-y-2 ${isVisionCodeX ? 'opacity-50 pointer-events-none' : ''}`}>
                 <Label htmlFor="model_name">{t.chat.modelName}</Label>
                 <Input
                   id="model_name"
-                  value={tempConfig.model_name}
+                  value={isVisionCodeX ? CODEX_DEFAULT_MODEL : tempConfig.model_name}
                   onChange={e =>
                     setTempConfig({
                       ...tempConfig,
                       model_name: e.target.value,
                     })
                   }
+                  disabled={isVisionCodeX}
                   placeholder="model-name"
                 />
               </div>
@@ -925,9 +923,9 @@ function ChatComponent() {
                 <Label className="text-sm font-medium">
                   {t.chat.agentType || 'Agent 类型'}
                 </Label>
-                {isUsingCodeX && (
+                {isVisionCodeX && (
                   <p className="text-xs text-slate-500 dark:text-slate-400">
-                    Novaper 认证下仅支持 Novaper Agent。
+                    Codex 认证下推荐使用 Codex Agent。
                   </p>
                 )}
                 <div className="grid grid-cols-2 gap-2">
@@ -1183,25 +1181,26 @@ function ChatComponent() {
               </div>
 
               {/* Decision Base URL */}
-              <div className="space-y-2">
+              <div className={`space-y-2 ${isDecisionCodeX ? 'opacity-50 pointer-events-none' : ''}`}>
                 <Label htmlFor="decision_base_url">
-                  {t.chat.decisionBaseUrl} *
+                  {t.chat.decisionBaseUrl} {!isDecisionCodeX && '*'}
                 </Label>
                 <Input
                   id="decision_base_url"
-                  value={tempConfig.decision_base_url}
+                  value={isDecisionCodeX ? '' : tempConfig.decision_base_url}
                   onChange={e =>
                     setTempConfig({
                       ...tempConfig,
                       decision_base_url: e.target.value,
                     })
                   }
-                  placeholder="http://localhost:8080/v1"
+                  disabled={isDecisionCodeX}
+                  placeholder={isDecisionCodeX ? 'Codex OAuth 无需配置' : 'http://localhost:8080/v1'}
                 />
               </div>
 
               {/* Decision API Key */}
-              <div className="space-y-2">
+              <div className={`space-y-2 ${isDecisionCodeX ? 'opacity-50 pointer-events-none' : ''}`}>
                 <Label htmlFor="decision_api_key">
                   {t.chat.decisionApiKey}
                 </Label>
@@ -1209,14 +1208,15 @@ function ChatComponent() {
                   <Input
                     id="decision_api_key"
                     type={showApiKey ? 'text' : 'password'}
-                    value={tempConfig.decision_api_key}
+                    value={isDecisionCodeX ? '' : tempConfig.decision_api_key}
                     onChange={e =>
                       setTempConfig({
                         ...tempConfig,
                         decision_api_key: e.target.value,
                       })
                     }
-                    placeholder="sk-..."
+                    disabled={isDecisionCodeX}
+                    placeholder={isDecisionCodeX ? 'Codex OAuth 无需配置' : 'sk-...'}
                     className="pr-10"
                   />
                   <Button
@@ -1224,6 +1224,7 @@ function ChatComponent() {
                     variant="ghost"
                     size="icon"
                     onClick={() => setShowApiKey(!showApiKey)}
+                    disabled={isDecisionCodeX}
                     className="absolute right-0 top-0 h-full px-3 hover:bg-transparent"
                   >
                     {showApiKey ? (
@@ -1236,19 +1237,20 @@ function ChatComponent() {
               </div>
 
               {/* Decision Model Name */}
-              <div className="space-y-2">
+              <div className={`space-y-2 ${isDecisionCodeX ? 'opacity-50 pointer-events-none' : ''}`}>
                 <Label htmlFor="decision_model_name">
-                  {t.chat.decisionModelName} *
+                  {t.chat.decisionModelName} {!isDecisionCodeX && '*'}
                 </Label>
                 <Input
                   id="decision_model_name"
-                  value={tempConfig.decision_model_name}
+                  value={isDecisionCodeX ? CODEX_DEFAULT_MODEL : tempConfig.decision_model_name}
                   onChange={e =>
                     setTempConfig({
                       ...tempConfig,
                       decision_model_name: e.target.value,
                     })
                   }
+                  disabled={isDecisionCodeX}
                   placeholder=""
                 />
               </div>
