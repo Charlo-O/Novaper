@@ -68,6 +68,10 @@ export function DeviceMonitor({
     'device-monitor-width',
     320
   );
+  const [isCollapsed, setIsCollapsed] = useLocalStorage<boolean>(
+    'device-monitor-collapsed',
+    true
+  );
   const [fallbackReason, setFallbackReason] = useState<string | null>(null);
   const [showWebCodecsWarning, setShowWebCodecsWarning] = useState(false);
 
@@ -139,13 +143,13 @@ export function DeviceMonitor({
     [displayMode]
   );
 
-  const toggleDisplayMode = (mode: 'auto' | 'video' | 'screenshot') => {
+  const toggleDisplayMode = (mode: 'auto' | 'video' | 'screenshot' | 'live') => {
     setDisplayMode(mode);
   };
 
   // Live frame stream via SSE
   useEffect(() => {
-    if (displayMode !== 'live' || !liveSessionId || !isVisible) {
+    if (isCollapsed || displayMode !== 'live' || !liveSessionId || !isVisible) {
       liveEventSourceRef.current?.close();
       liveEventSourceRef.current = null;
       return;
@@ -183,7 +187,7 @@ export function DeviceMonitor({
       es.close();
       liveEventSourceRef.current = null;
     };
-  }, [displayMode, liveSessionId, isVisible]);
+  }, [displayMode, liveSessionId, isVisible, isCollapsed]);
 
   useEffect(() => {
     return () => {
@@ -203,7 +207,7 @@ export function DeviceMonitor({
   }, []);
 
   useEffect(() => {
-    if (!deviceId || !isVisible) return;
+    if (!deviceId || !isVisible || isCollapsed) return;
 
     const shouldPollScreenshots =
       displayMode === 'screenshot' ||
@@ -233,7 +237,7 @@ export function DeviceMonitor({
     const interval = setInterval(fetchScreenshot, 500);
 
     return () => clearInterval(interval);
-  }, [deviceId, videoStreamFailed, displayMode, isVisible]);
+  }, [deviceId, videoStreamFailed, displayMode, isVisible, isCollapsed]);
 
   const getReasonMessage = (reason: string): string => {
     const messages: Record<string, string> = {
@@ -253,6 +257,49 @@ export function DeviceMonitor({
 
   const widthStyle =
     typeof panelWidth === 'number' ? `${panelWidth}px` : 'auto';
+
+  if (isCollapsed) {
+    return (
+      <Card
+        className={`flex-shrink-0 relative overflow-hidden bg-background ${className}`}
+        style={{ width: '56px', minWidth: '56px', maxWidth: '56px' }}
+      >
+        <div className="flex h-full min-h-[240px] flex-col items-center justify-between py-4">
+          <Button
+            variant="ghost"
+            size="icon"
+            onClick={() => setIsCollapsed(false)}
+            className="h-8 w-8 rounded-full bg-popover/90 backdrop-blur border border-border shadow-lg hover:bg-accent"
+            title="Expand monitor"
+          >
+            <ChevronLeft className="w-4 h-4" />
+          </Button>
+
+          <div className="flex flex-col items-center gap-3 text-muted-foreground">
+            {displayMode === 'live' ? (
+              <MonitorPlay className="w-4 h-4" />
+            ) : displayMode === 'video' ? (
+              <Video className="w-4 h-4" />
+            ) : (
+              <ImageIcon className="w-4 h-4" />
+            )}
+            <Badge
+              variant="secondary"
+              className="rotate-90 origin-center whitespace-nowrap px-2 py-0.5 text-[10px]"
+            >
+              {displayMode === 'live'
+                ? 'Live'
+                : displayMode === 'video'
+                  ? 'Video'
+                  : 'Image'}
+            </Badge>
+          </div>
+
+          <div className="h-8 w-8" />
+        </div>
+      </Card>
+    );
+  }
 
   return (
     <Card
@@ -370,6 +417,15 @@ export function DeviceMonitor({
             ) : (
               <ChevronLeft className="w-4 h-4" />
             )}
+          </Button>
+          <Button
+            variant="ghost"
+            size="icon"
+            onClick={() => setIsCollapsed(true)}
+            className="h-8 w-8 rounded-full bg-popover/90 backdrop-blur border border-border shadow-lg hover:bg-accent"
+            title="Collapse monitor"
+          >
+            <ChevronRight className="w-4 h-4" />
           </Button>
         </div>
       </div>

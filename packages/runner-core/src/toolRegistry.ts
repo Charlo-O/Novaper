@@ -107,7 +107,7 @@ export function createToolRegistry(
     browserTools.push(
       {
         name: "browser_open",
-        description: "Open or reuse a managed Chromium browser session for this operator. Use this before DOM-based browser work.",
+        description: "Open or reuse a managed Chromium browser session for this operator. Uses Playwright with a persisted automation profile. If the result reports requiresDesktopActions=true, switch to desktop_actions.",
         parameters: {
           type: "object",
           additionalProperties: false,
@@ -160,7 +160,7 @@ export function createToolRegistry(
       },
       {
         name: "browser_snapshot",
-        description: "Inspect the active page using DOM data. Returns tabs, page metadata, actionable elements, and an optional text preview.",
+        description: "Inspect the active page using DOM data. Returns tabs, page metadata, actionable elements, and an optional text preview. If the result falls back to visual mode, continue with desktop_actions.",
         parameters: {
           type: "object",
           additionalProperties: false,
@@ -181,7 +181,7 @@ export function createToolRegistry(
       },
       {
         name: "browser_click",
-        description: "Click an element in the active page by CSS selector, visible text, or page coordinates.",
+        description: "Click an element in the active page by CSS selector, visible text, or page coordinates. If visual fallback is active, stop using browser selectors and continue with desktop_actions.",
         parameters: {
           type: "object",
           additionalProperties: false,

@@ -10,7 +10,7 @@ Current repository modes:
 
 - Control native Windows apps through UI Automation, window management, process control, and file operations
 - Fall back to screenshot-driven `desktop_actions` when UIA is unreliable
-- Control Chromium browsers with DOM-aware tools backed by `puppeteer-core`
+- Control Chromium browsers with DOM-aware tools backed by `playwright-core` and a persisted automation profile
 - Route instructions between desktop execution, CLI execution, and multi-step planning
 - Persist live sessions, runs, logs, memory, screenshots, and replay artifacts under `data/`
 - Support both `OPENAI_API_KEY` and local `Codex OAuth`

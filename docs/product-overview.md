@@ -29,7 +29,7 @@ The router lives in `packages/runner-core/src/instructionClassifier.ts`, and pla
 Novaper uses different control paths depending on the target surface.
 
 For websites in Chromium browsers:
-- `browser_*` tools backed by `puppeteer-core`
+- `browser_*` tools backed by `playwright-core`
 - DOM-aware navigation, tab control, element inspection, typing, keyboard shortcuts, scrolling, and text extraction
 
 For native Windows apps:
