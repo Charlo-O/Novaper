@@ -14,6 +14,7 @@ import path from "node:path";
 import type { ResponseInputItem } from "openai/resources/responses/responses";
 import type { DesktopAgentEvent } from "./desktopAgent.js";
 import type { ResponsesClient } from "./responsesClient.js";
+import { buildActiveSkillsPrompt } from "./capabilityProfile.js";
 import { createCliTools, type CliTool } from "./piTools.js";
 
 // ---------------------------------------------------------------------------
@@ -29,6 +30,7 @@ export interface DrivePiAgentContext {
   shouldStop: () => boolean;
   maxTurns?: number;
   skills?: Array<{ name: string; content: string }>;
+  capabilityBrief?: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -45,7 +47,13 @@ const TOOL_DESCRIPTIONS: Record<string, string> = {
   ls: "List directory contents",
 };
 
-function buildSystemPrompt(cwd: string, toolNames: string[], contextFiles: Array<{ path: string; content: string }>, skills?: Array<{ name: string; content: string }>): string {
+function buildSystemPrompt(
+  cwd: string,
+  toolNames: string[],
+  contextFiles: Array<{ path: string; content: string }>,
+  skills?: Array<{ name: string; content: string }>,
+  capabilityBrief?: string,
+): string {
   const now = new Date();
   const dateTime = now.toLocaleString("en-US", {
     weekday: "long",
@@ -101,6 +109,10 @@ ${toolsList}
 Guidelines:
 ${guidelinesText}`;
 
+  if (capabilityBrief?.trim()) {
+    prompt += `\n\n${capabilityBrief.trim()}`;
+  }
+
   // Append project context files
   if (contextFiles.length > 0) {
     prompt += "\n\n# Project Context\n\n";
@@ -111,12 +123,9 @@ ${guidelinesText}`;
   }
 
   // Append active skills
-  if (skills && skills.length > 0) {
-    prompt += "\n\n# Active Skills\n\n";
-    prompt += "The following skill prompts are active and should be incorporated into your behavior:\n\n";
-    for (const skill of skills) {
-      prompt += `## ${skill.name}\n\n${skill.content}\n\n`;
-    }
+  const skillsPrompt = buildActiveSkillsPrompt(skills);
+  if (skillsPrompt) {
+    prompt += `\n\n${skillsPrompt}`;
   }
 
   prompt += `\nCurrent date and time: ${dateTime}`;
@@ -342,7 +351,13 @@ export async function drivePiAgent(context: DrivePiAgentContext): Promise<{ summ
   }
 
   // Build structured system prompt (ported from pi-mono)
-  const systemPrompt = buildSystemPrompt(cwd, toolNames, contextFiles, context.skills);
+  const systemPrompt = buildSystemPrompt(
+    cwd,
+    toolNames,
+    contextFiles,
+    context.skills,
+    context.capabilityBrief,
+  );
 
   await context.onEvent({
     type: "status",

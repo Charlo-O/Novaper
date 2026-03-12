@@ -123,6 +123,7 @@ When available through the provider:
 ## Documentation
 
 - [Product Overview](./docs/product-overview.md)
+- [Roadmap](./docs/roadmap.md)
 - [Architecture](./docs/architecture.md)
 - [Setup and Auth](./docs/setup-and-auth.md)
 - [Desktop and Browser Automation](./docs/desktop-automation.md)

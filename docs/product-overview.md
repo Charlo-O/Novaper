@@ -46,6 +46,8 @@ Novaper persists runtime state under `data/`:
 - `data/logs`: server console capture and JSONL logs
 - `data/memory`: app profiles, long-term memory, session snapshots
 - `data/auth`: local auth state for Codex OAuth
+- `data/automation`: workflows and scheduled task state
+- `data/devices`: runner-managed device and device-group state
 
 ## Why This Product Shape
 
@@ -60,5 +62,12 @@ The design goal is pragmatic reliability:
 
 - local-machine, Windows-first product
 - no RBAC or multi-user isolation model
-- no background fleet scheduler
+- local scheduling exists, but there is no distributed fleet scheduler yet
 - no bundled browser; Chromium automation uses the operator's installed Chrome, Edge, or Brave
+
+## Near-Term Roadmap
+
+- replace mock device transport with real ADB and remote-bridge execution
+- dispatch scheduled tasks to selected devices or device groups instead of only the local runner
+- expose configured MCP servers as callable tools during planning and execution
+- harden automation with retries, concurrency controls, and better task-level observability

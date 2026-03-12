@@ -2,6 +2,7 @@ import express from "express";
 import archiver from "archiver";
 import { promises as fs } from "node:fs";
 import path from "node:path";
+import type { AuthProvider } from "../../../packages/replay-schema/src/types.js";
 import { loadScenarios } from "../../../packages/scenario-kit/src/loadScenarios.js";
 import { RunStore } from "./store.js";
 import { LiveSessionStore } from "./liveStore.js";
@@ -9,6 +10,12 @@ import { executeRun } from "../../../packages/runner-core/src/runExecutor.js";
 import { DesktopSidecar } from "../../../packages/desktop-runtime/src/sidecar.js";
 import { driveDesktopAgent } from "../../../packages/runner-core/src/desktopAgent.js";
 import { drivePiAgent } from "../../../packages/runner-core/src/piAgent.js";
+import {
+  buildActiveSkillsPrompt,
+  buildCapabilityPrompt,
+  buildCapabilitySnapshot,
+  type PromptSkill,
+} from "../../../packages/runner-core/src/capabilityProfile.js";
 import { classifyInstruction, type AgentRoute } from "../../../packages/runner-core/src/instructionClassifier.js";
 import { planTasks, getNextTask, updateTaskStatus, isPlanComplete, formatPlan } from "../../../packages/runner-core/src/taskPlanner.js";
 import { AuthService } from "./authService.js";
@@ -17,6 +24,8 @@ import { LogCollector } from "./logCollector.js";
 import { MemoryManager } from "../../../packages/memory/src/memoryManager.js";
 import { FrameStreamer } from "../../../packages/runner-core/src/videoObserver.js";
 import { BrowserSessionManager } from "../../../packages/browser-runtime/src/browserSessionManager.js";
+import { AutomationStore } from "./automationStore.js";
+import { DeviceStore, type StoredDeviceRecord } from "./deviceStore.js";
 import { PluginStore } from "./pluginStore.js";
 
 function normalizeRequestedProvider(input: unknown) {
@@ -27,8 +36,12 @@ function authErrorStatus(message: string) {
   return /not configured|not authenticated|No auth provider/i.test(message) ? 400 : 500;
 }
 
-function buildLiveDeveloperPrompt() {
-  return [
+function buildLiveDeveloperPrompt(options?: {
+  capabilityBrief?: string;
+  skills?: PromptSkill[];
+}) {
+  const sections = [
+    [
     "You are a live Windows desktop assistant similar to an interactive computer-use operator.",
     "The human is watching the current desktop and will send one instruction at a time.",
     "For every instruction, inspect the current desktop state before acting.",
@@ -43,7 +56,19 @@ function buildLiveDeveloperPrompt() {
     "If the instruction is ambiguous, ask a short clarification instead of guessing.",
     "If you hit UAC, a security boundary, CAPTCHA, or a blocked state, stop and explain the blocker.",
     "When a desktop screenshot is attached, treat it as the current visual state. Use absolute pixel coordinates from that screenshot for desktop_actions.",
-  ].join("\n");
+    ].join("\n"),
+  ];
+
+  if (options?.capabilityBrief?.trim()) {
+    sections.push(options.capabilityBrief.trim());
+  }
+
+  const skillsPrompt = buildActiveSkillsPrompt(options?.skills);
+  if (skillsPrompt) {
+    sections.push(skillsPrompt);
+  }
+
+  return sections.join("\n\n");
 }
 
 async function saveLiveObservation(sessionArtifactDir: string, sessionId: string, base64Image: string) {
@@ -52,6 +77,29 @@ async function saveLiveObservation(sessionArtifactDir: string, sessionId: string
   await fs.mkdir(path.dirname(filePath), { recursive: true });
   await fs.writeFile(filePath, Buffer.from(base64Image, "base64"));
   return `/artifacts/live/${sessionId}/screenshots/${fileName}`;
+}
+
+async function loadCapabilityContext(pluginStore: PluginStore) {
+  const [enabledSkills, mcpServers] = await Promise.all([
+    pluginStore.getEnabledSkills(),
+    pluginStore.listMcpServers(),
+  ]);
+  const skills = enabledSkills.map((skill) => ({
+    name: skill.name,
+    content: skill.content,
+    description: skill.description,
+  }));
+  const snapshot = buildCapabilitySnapshot({
+    enabledSkills,
+    mcpServers,
+  });
+
+  return {
+    enabledSkills,
+    skills,
+    snapshot,
+    capabilityBrief: buildCapabilityPrompt(snapshot),
+  };
 }
 
 export async function createServer(config: {
@@ -71,6 +119,8 @@ export async function createServer(config: {
     rootDir: config.rootDir,
     sidecar,
   });
+  const automationStore = new AutomationStore(path.join(config.rootDir, "data", "automation"));
+  const deviceStore = new DeviceStore(path.join(config.rootDir, "data", "devices"));
   const pluginStore = new PluginStore(config.rootDir);
   const scenarios = await loadScenarios(path.join(config.rootDir, "scenarios"));
   const scenarioMap = new Map(scenarios.map((scenario) => [scenario.manifest.id, scenario]));
@@ -84,12 +134,172 @@ export async function createServer(config: {
   await memoryManager.init();
 
   // Restore persisted data from disk on startup
-  await Promise.all([store.loadFromDisk(), liveStore.loadFromDisk()]);
+  await Promise.all([
+    store.loadFromDisk(),
+    liveStore.loadFromDisk(),
+    automationStore.loadFromDisk(),
+    deviceStore.loadFromDisk(),
+  ]);
 
   app.use(express.json({ limit: "1mb" }));
   app.use(express.static(operatorWebDir));
   app.use("/artifacts", express.static(path.join(config.rootDir, "data", "runs")));
   app.use("/artifacts/live", express.static(path.join(config.rootDir, "data", "live-sessions")));
+
+  const runningScheduledTasks = new Set<string>();
+  const automationBaseUrl = `http://${config.host === "0.0.0.0" ? "127.0.0.1" : config.host}:${config.port}`;
+
+  function mapDeviceRecord(device: StoredDeviceRecord) {
+    const now = Date.now();
+    return {
+      id: device.id,
+      serial: device.serial,
+      model: device.model,
+      status: "device",
+      connection_type: device.connection_type,
+      state: "online",
+      is_available_only: false,
+      display_name: device.display_name,
+      group_id: device.group_id || "default",
+      agent: {
+        state: "idle",
+        created_at: now,
+        last_used: now,
+        error_message: null,
+        model_name: config.model,
+      },
+    };
+  }
+
+  async function syncPrimaryDevice() {
+    const heartbeat = await sidecar.heartbeat();
+    await deviceStore.syncPrimaryDevice(heartbeat.machineId || "NOVAPER-DESKTOP");
+    return heartbeat;
+  }
+
+  async function waitForSessionToSettle(sessionId: string, timeoutMs = 15 * 60 * 1000) {
+    const startedAt = Date.now();
+
+    while (Date.now() - startedAt < timeoutMs) {
+      const sessionState = liveStore.getSession(sessionId);
+      if (!sessionState) {
+        throw new Error(`Live session disappeared: ${sessionId}`);
+      }
+      if (sessionState.status === "idle" || sessionState.status === "error") {
+        return sessionState;
+      }
+      await new Promise((resolve) => setTimeout(resolve, 1000));
+    }
+
+    throw new Error(`Live session timed out after ${Math.round(timeoutMs / 1000)} seconds.`);
+  }
+
+  async function queueScheduledTaskRun(taskId: string, trigger: "manual" | "scheduled") {
+    if (runningScheduledTasks.has(taskId)) {
+      return { queued: false, reason: "already-running" as const };
+    }
+
+    const task = automationStore.getScheduledTask(taskId);
+    if (!task) {
+      throw new Error("Scheduled task not found.");
+    }
+
+    const workflow = automationStore.getWorkflow(task.workflow_uuid);
+    if (!workflow) {
+      throw new Error(`Workflow not found for scheduled task: ${task.workflow_uuid}`);
+    }
+
+    runningScheduledTasks.add(taskId);
+    await automationStore.recordTaskRunStart(taskId, `${trigger === "manual" ? "Manual" : "Scheduled"} run queued.`);
+
+    void (async () => {
+      try {
+        const authStatus = await authService.getStatus();
+        const authProvider = authStatus.defaultProvider;
+        if (!authProvider) {
+          throw new Error("No auth provider is configured for automation runs.");
+        }
+
+        const session = await liveStore.createSession(config.model, authProvider as AuthProvider);
+        await liveStore.appendEvent(session.id, {
+          type: "status",
+          level: "info",
+          message: `${trigger === "manual" ? "Manual" : "Scheduled"} workflow run started.`,
+          payload: {
+            scheduledTaskId: task.id,
+            workflowUuid: workflow.uuid,
+            workflowName: workflow.name,
+          },
+        });
+
+        const instruction = [
+          `Workflow: ${workflow.name}`,
+          "Execute the following workflow exactly as a local automation task.",
+          workflow.text,
+        ].join("\n\n");
+
+        const commandResponse = await fetch(`${automationBaseUrl}/api/live-sessions/${session.id}/commands`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            instruction,
+            authProvider,
+            model: config.model,
+          }),
+        });
+
+        if (!commandResponse.ok) {
+          const errorText = await commandResponse.text();
+          throw new Error(`Automation launch failed: HTTP ${commandResponse.status} ${errorText}`);
+        }
+
+        const settledSession = await waitForSessionToSettle(session.id);
+        const success = settledSession.status !== "error";
+        const message = success
+          ? settledSession.latestSummary ?? "Workflow completed."
+          : settledSession.error ?? "Workflow failed.";
+
+        await automationStore.recordTaskRunResult(task.id, {
+          success,
+          message,
+          successCount: success ? 1 : 0,
+          totalCount: 1,
+        });
+      } catch (error) {
+        await automationStore.recordTaskRunResult(taskId, {
+          success: false,
+          message: error instanceof Error ? error.message : String(error),
+          successCount: 0,
+          totalCount: 1,
+        });
+      } finally {
+        runningScheduledTasks.delete(taskId);
+      }
+    })();
+
+    return { queued: true as const };
+  }
+
+  function startAutomationScheduler() {
+    const tick = async () => {
+      const dueTasks = automationStore.listDueScheduledTasks();
+      for (const task of dueTasks) {
+        if (runningScheduledTasks.has(task.id)) {
+          continue;
+        }
+        try {
+          await queueScheduledTaskRun(task.id, "scheduled");
+        } catch {
+          // best effort
+        }
+      }
+    };
+
+    void tick();
+    setInterval(() => {
+      void tick();
+    }, 30_000);
+  }
 
   app.get("/api/system/health", async (_request, response) => {
     const [heartbeat, auth] = await Promise.all([sidecar.heartbeat(), authService.getStatus()]);
@@ -103,8 +313,456 @@ export async function createServer(config: {
     });
   });
 
+  app.get("/api/system/capabilities", async (_request, response) => {
+    const capabilityContext = await loadCapabilityContext(pluginStore);
+    response.json(capabilityContext.snapshot);
+  });
+
   app.get("/api/auth/status", async (_request, response) => {
     response.json(await authService.getStatus());
+  });
+
+  app.get("/api/devices", async (_request, response) => {
+    await syncPrimaryDevice();
+    response.json({
+      devices: deviceStore.listDevices().map(mapDeviceRecord),
+    });
+  });
+
+  app.post("/api/devices/connect-wifi", async (request, response) => {
+    await syncPrimaryDevice();
+    const deviceId = String(request.body?.device_id ?? DeviceStore.PRIMARY_DEVICE_ID).trim();
+    try {
+      const device = await deviceStore.setConnectionType(deviceId, "wifi");
+      response.json({
+        success: true,
+        message: "Connected over WiFi.",
+        device_id: device.id,
+      });
+    } catch (error) {
+      response.status(404).json({ error: error instanceof Error ? error.message : String(error) });
+    }
+  });
+
+  app.post("/api/devices/disconnect-wifi", async (request, response) => {
+    await syncPrimaryDevice();
+    const deviceId = String(request.body?.device_id ?? "").trim();
+    if (!deviceId) {
+      response.status(400).json({ error: "device_id is required." });
+      return;
+    }
+    try {
+      await deviceStore.setConnectionType(deviceId, "usb");
+      response.json({
+        success: true,
+        message: "Disconnected WiFi device.",
+      });
+    } catch (error) {
+      response.status(404).json({ error: error instanceof Error ? error.message : String(error) });
+    }
+  });
+
+  app.post("/api/devices/manual-wifi", async (request, response) => {
+    await syncPrimaryDevice();
+    const ip = String(request.body?.ip ?? "").trim();
+    const port = Number(request.body?.port ?? 5555);
+    if (!ip) {
+      response.status(400).json({ error: "ip is required." });
+      return;
+    }
+    const device = await deviceStore.addManualWifiDevice({
+      ip,
+      port: Number.isFinite(port) ? port : 5555,
+    });
+    response.json({
+      success: true,
+      message: "Manual WiFi device added.",
+      device_id: device.id,
+    });
+  });
+
+  app.put("/api/devices/:serial/name", async (request, response) => {
+    await syncPrimaryDevice();
+    const serial = String(request.params.serial ?? "").trim();
+    const displayName =
+      request.body?.display_name == null ? null : String(request.body.display_name).trim() || null;
+    try {
+      const device = await deviceStore.updateDeviceName(serial, displayName);
+      response.json({
+        success: true,
+        serial: device.serial,
+        display_name: device.display_name,
+      });
+    } catch (error) {
+      response.status(404).json({ error: error instanceof Error ? error.message : String(error) });
+    }
+  });
+
+  app.get("/api/devices/:serial/name", async (request, response) => {
+    await syncPrimaryDevice();
+    const serial = String(request.params.serial ?? "").trim();
+    const device = deviceStore.getDeviceBySerial(serial);
+    if (!device) {
+      response.status(404).json({ error: `Device not found: ${serial}` });
+      return;
+    }
+    response.json({
+      success: true,
+      serial,
+      display_name: device.display_name,
+    });
+  });
+
+  app.get("/api/device-groups", async (_request, response) => {
+    await syncPrimaryDevice();
+    response.json({
+      groups: deviceStore.listGroupsWithCounts(),
+    });
+  });
+
+  app.post("/api/device-groups", async (request, response) => {
+    const name = String(request.body?.name ?? "").trim();
+    if (!name) {
+      response.status(400).json({ error: "name is required." });
+      return;
+    }
+    await syncPrimaryDevice();
+    const group = await deviceStore.createGroup(name);
+    const enriched = deviceStore.listGroupsWithCounts().find((entry) => entry.id === group.id);
+    response.status(201).json(enriched ?? { ...group, device_count: 0 });
+  });
+
+  app.put("/api/device-groups/:id", async (request, response) => {
+    const name = String(request.body?.name ?? "").trim();
+    if (!name) {
+      response.status(400).json({ error: "name is required." });
+      return;
+    }
+    await syncPrimaryDevice();
+    try {
+      const group = await deviceStore.updateGroup(request.params.id, name);
+      const enriched = deviceStore.listGroupsWithCounts().find((entry) => entry.id === group.id);
+      response.json(enriched ?? { ...group, device_count: 0 });
+    } catch (error) {
+      response.status(404).json({ error: error instanceof Error ? error.message : String(error) });
+    }
+  });
+
+  app.delete("/api/device-groups/:id", async (request, response) => {
+    await syncPrimaryDevice();
+    const result = await deviceStore.deleteGroup(request.params.id);
+    response.json(result);
+  });
+
+  app.post("/api/device-groups/reorder", async (request, response) => {
+    const groupIds = Array.isArray(request.body?.group_ids)
+      ? request.body.group_ids.map((value: unknown) => String(value))
+      : [];
+    await syncPrimaryDevice();
+    response.json(await deviceStore.reorderGroups(groupIds));
+  });
+
+  app.post("/api/device-groups/assign", async (request, response) => {
+    const serial = String(request.body?.serial ?? "").trim();
+    const groupId = String(request.body?.group_id ?? "").trim();
+    if (!serial || !groupId) {
+      response.status(400).json({ error: "serial and group_id are required." });
+      return;
+    }
+    await syncPrimaryDevice();
+    try {
+      await deviceStore.assignDeviceToGroup(serial, groupId);
+      response.json({
+        success: true,
+        message: "Device moved to group.",
+      });
+    } catch (error) {
+      response.status(404).json({ error: error instanceof Error ? error.message : String(error) });
+    }
+  });
+
+  app.get("/api/mdns/devices", (_request, response) => {
+    response.json({
+      success: true,
+      devices: deviceStore.listMdnsDevices(),
+    });
+  });
+
+  app.post("/api/devices/pair-wifi", async (request, response) => {
+    await syncPrimaryDevice();
+    const ip = String(request.body?.ip ?? "").trim();
+    const connectionPort = Number(request.body?.connection_port ?? 5555);
+    if (!ip) {
+      response.status(400).json({ error: "ip is required." });
+      return;
+    }
+    const device = await deviceStore.addManualWifiDevice({
+      ip,
+      port: Number.isFinite(connectionPort) ? connectionPort : 5555,
+    });
+    response.json({
+      success: true,
+      message: "Device paired over WiFi.",
+      device_id: device.id,
+    });
+  });
+
+  app.post("/api/remote-devices/discover", (request, response) => {
+    const baseUrl = String(request.body?.base_url ?? "").trim();
+    if (!baseUrl) {
+      response.status(400).json({ error: "base_url is required." });
+      return;
+    }
+    response.json(deviceStore.discoverRemoteDevices(baseUrl));
+  });
+
+  app.post("/api/remote-devices", async (request, response) => {
+    await syncPrimaryDevice();
+    const baseUrl = String(request.body?.base_url ?? "").trim();
+    const deviceId = String(request.body?.device_id ?? "").trim();
+    if (!baseUrl || !deviceId) {
+      response.status(400).json({ error: "base_url and device_id are required." });
+      return;
+    }
+    const device = await deviceStore.addRemoteDevice({ baseUrl, deviceId });
+    response.json({
+      success: true,
+      message: "Remote device added.",
+      serial: device.serial,
+    });
+  });
+
+  app.delete("/api/remote-devices/:serial", async (request, response) => {
+    await syncPrimaryDevice();
+    const serial = String(request.params.serial ?? "").trim();
+    const removed = await deviceStore.removeRemoteDevice(serial);
+    response.status(removed ? 200 : 404).json({
+      success: removed,
+      message: removed ? "Remote device removed." : "Remote device not found.",
+    });
+  });
+
+  app.post("/api/qr-pairing", (request, response) => {
+    const timeout = Number(request.body?.timeout ?? 90);
+    const session = deviceStore.createQrPairingSession(Number.isFinite(timeout) ? timeout : 90);
+    response.json({
+      success: true,
+      qr_payload: `WIFI:T:ADB;S:Novaper Pairing;P:${session.sessionId};`,
+      session_id: session.sessionId,
+      expires_at: session.expiresAt,
+      message: "QR pairing started.",
+    });
+  });
+
+  app.get("/api/qr-pairing/:sessionId", async (request, response) => {
+    await syncPrimaryDevice();
+    response.json(deviceStore.getQrPairingStatus(request.params.sessionId));
+  });
+
+  app.post("/api/qr-pairing/:sessionId/cancel", (request, response) => {
+    response.json(deviceStore.cancelQrPairing(request.params.sessionId));
+  });
+
+  app.get("/api/workflows", (_request, response) => {
+    response.json({
+      workflows: automationStore.listWorkflows().map((workflow) => ({
+        uuid: workflow.uuid,
+        name: workflow.name,
+        text: workflow.text,
+      })),
+    });
+  });
+
+  app.get("/api/workflows/:uuid", (request, response) => {
+    const workflow = automationStore.getWorkflow(request.params.uuid);
+    if (!workflow) {
+      response.status(404).json({ error: "Workflow not found." });
+      return;
+    }
+    response.json({
+      uuid: workflow.uuid,
+      name: workflow.name,
+      text: workflow.text,
+    });
+  });
+
+  app.post("/api/workflows", async (request, response) => {
+    const name = String(request.body?.name ?? "").trim();
+    const text = String(request.body?.text ?? "").trim();
+    if (!name || !text) {
+      response.status(400).json({ error: "name and text are required." });
+      return;
+    }
+    const workflow = await automationStore.createWorkflow({ name, text });
+    response.status(201).json({
+      uuid: workflow.uuid,
+      name: workflow.name,
+      text: workflow.text,
+    });
+  });
+
+  app.put("/api/workflows/:uuid", async (request, response) => {
+    const name = String(request.body?.name ?? "").trim();
+    const text = String(request.body?.text ?? "").trim();
+    if (!name || !text) {
+      response.status(400).json({ error: "name and text are required." });
+      return;
+    }
+
+    const workflow = automationStore.getWorkflow(request.params.uuid);
+    if (!workflow) {
+      response.status(404).json({ error: "Workflow not found." });
+      return;
+    }
+
+    const updatedWorkflow = await automationStore.updateWorkflow(request.params.uuid, { name, text });
+    response.json({
+      uuid: updatedWorkflow.uuid,
+      name: updatedWorkflow.name,
+      text: updatedWorkflow.text,
+    });
+  });
+
+  app.delete("/api/workflows/:uuid", async (request, response) => {
+    const dependentTasks = automationStore
+      .listScheduledTasks()
+      .filter((task) => task.workflow_uuid === request.params.uuid);
+    if (dependentTasks.length > 0) {
+      response.status(409).json({
+        error: "Workflow is still referenced by scheduled tasks.",
+      });
+      return;
+    }
+
+    const deleted = await automationStore.deleteWorkflow(request.params.uuid);
+    if (!deleted) {
+      response.status(404).json({ error: "Workflow not found." });
+      return;
+    }
+    response.json({ ok: true });
+  });
+
+  app.get("/api/scheduled-tasks", (_request, response) => {
+    response.json({
+      tasks: automationStore.listScheduledTasks(),
+    });
+  });
+
+  app.get("/api/scheduled-tasks/:id", (request, response) => {
+    const task = automationStore.getScheduledTask(request.params.id);
+    if (!task) {
+      response.status(404).json({ error: "Scheduled task not found." });
+      return;
+    }
+    response.json(task);
+  });
+
+  app.post("/api/scheduled-tasks", async (request, response) => {
+    const name = String(request.body?.name ?? "").trim();
+    const workflowUuid = String(request.body?.workflow_uuid ?? "").trim();
+    const cronExpression = String(request.body?.cron_expression ?? "").trim();
+    if (!name || !workflowUuid || !cronExpression) {
+      response.status(400).json({ error: "name, workflow_uuid, and cron_expression are required." });
+      return;
+    }
+
+    if (!automationStore.getWorkflow(workflowUuid)) {
+      response.status(400).json({ error: `Unknown workflow: ${workflowUuid}` });
+      return;
+    }
+
+    try {
+      const task = await automationStore.createScheduledTask({
+        name,
+        workflow_uuid: workflowUuid,
+        device_serialnos: Array.isArray(request.body?.device_serialnos)
+          ? request.body.device_serialnos.map(String)
+          : [],
+        device_group_id:
+          typeof request.body?.device_group_id === "string" ? request.body.device_group_id : null,
+        cron_expression: cronExpression,
+        enabled: request.body?.enabled !== false,
+      });
+      response.status(201).json(task);
+    } catch (error) {
+      response.status(400).json({
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+  });
+
+  app.put("/api/scheduled-tasks/:id", async (request, response) => {
+    const task = automationStore.getScheduledTask(request.params.id);
+    if (!task) {
+      response.status(404).json({ error: "Scheduled task not found." });
+      return;
+    }
+
+    const workflowUuid =
+      request.body?.workflow_uuid === undefined ? task.workflow_uuid : String(request.body.workflow_uuid ?? "").trim();
+    if (!workflowUuid || !automationStore.getWorkflow(workflowUuid)) {
+      response.status(400).json({ error: `Unknown workflow: ${workflowUuid}` });
+      return;
+    }
+
+    try {
+      const updatedTask = await automationStore.updateScheduledTask(request.params.id, {
+        name: typeof request.body?.name === "string" ? request.body.name : undefined,
+        workflow_uuid: workflowUuid,
+        device_serialnos: Array.isArray(request.body?.device_serialnos)
+          ? request.body.device_serialnos.map(String)
+          : request.body?.device_serialnos === null
+            ? null
+            : undefined,
+        device_group_id:
+          request.body?.device_group_id === null
+            ? null
+            : typeof request.body?.device_group_id === "string"
+              ? request.body.device_group_id
+              : undefined,
+        cron_expression:
+          typeof request.body?.cron_expression === "string" ? request.body.cron_expression : undefined,
+        enabled: typeof request.body?.enabled === "boolean" ? request.body.enabled : undefined,
+      });
+      response.json(updatedTask);
+    } catch (error) {
+      response.status(400).json({
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+  });
+
+  app.delete("/api/scheduled-tasks/:id", async (request, response) => {
+    const deleted = await automationStore.deleteScheduledTask(request.params.id);
+    if (!deleted) {
+      response.status(404).json({ error: "Scheduled task not found." });
+      return;
+    }
+    response.json({ ok: true });
+  });
+
+  app.post("/api/scheduled-tasks/:id/run", async (request, response) => {
+    const task = automationStore.getScheduledTask(request.params.id);
+    if (!task) {
+      response.status(404).json({ error: "Scheduled task not found." });
+      return;
+    }
+
+    try {
+      const result = await queueScheduledTaskRun(task.id, "manual");
+      if (!result.queued) {
+        response.status(409).json({ error: "Scheduled task is already running." });
+        return;
+      }
+      response.status(202).json({
+        ok: true,
+        taskId: task.id,
+      });
+    } catch (error) {
+      response.status(400).json({
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
   });
 
   app.post("/api/auth/codex/login", async (_request, response) => {
@@ -426,6 +1084,8 @@ export async function createServer(config: {
 
     void (async () => {
       try {
+        const capabilityContext = await loadCapabilityContext(pluginStore);
+
         // Classify instruction to determine agent routing
         let agentType: AgentRoute = "desktop";
         try {
@@ -449,7 +1109,16 @@ export async function createServer(config: {
             memoryCtx = await memoryManager.buildMemoryContext(instruction, windows, undefined, updated.id);
           } catch { /* best effort */ }
 
-          const plan = await planTasks(instruction, { windows, memory: memoryCtx }, auth.client, updated.model);
+          const plan = await planTasks(
+            instruction,
+            {
+              windows,
+              memory: memoryCtx,
+              capabilities: capabilityContext.capabilityBrief,
+            },
+            auth.client,
+            updated.model,
+          );
 
           await liveStore.appendEvent(updated.id, {
             type: "log",
@@ -486,6 +1155,8 @@ export async function createServer(config: {
                     await liveStore.appendEvent(updated.id, event);
                   },
                   shouldStop: () => Boolean(liveStore.getSession(updated.id)?.stopRequested),
+                  skills: capabilityContext.skills.length > 0 ? capabilityContext.skills : undefined,
+                  capabilityBrief: capabilityContext.capabilityBrief,
                 });
                 updateTaskStatus(plan, task.id, "completed", subResult.summary);
               } else {
@@ -493,7 +1164,10 @@ export async function createServer(config: {
                 const subResult = await driveDesktopAgent({
                   client: auth.client,
                   model: updated.model,
-                  developerPrompt: buildLiveDeveloperPrompt(),
+                  developerPrompt: buildLiveDeveloperPrompt({
+                    capabilityBrief: capabilityContext.capabilityBrief,
+                    skills: capabilityContext.skills,
+                  }),
                   userContent: task.description,
                   previousResponseId: auth.authProvider === "api-key" ? updated.previousResponseId : undefined,
                   sidecar,
@@ -536,10 +1210,6 @@ export async function createServer(config: {
             payload: { summary: completedSummaries, plan: formatPlan(plan) },
           });
         } else if (agentType === "cli") {
-          // Load enabled skills for injection into system prompt
-          const enabledSkills = await pluginStore.getEnabledSkills();
-          const skillsForAgent = enabledSkills.map((s) => ({ name: s.name, content: s.content }));
-
           const result = await drivePiAgent({
             instruction,
             client: auth.client,
@@ -549,7 +1219,8 @@ export async function createServer(config: {
               await liveStore.appendEvent(updated.id, event);
             },
             shouldStop: () => Boolean(liveStore.getSession(updated.id)?.stopRequested),
-            skills: skillsForAgent.length > 0 ? skillsForAgent : undefined,
+            skills: capabilityContext.skills.length > 0 ? capabilityContext.skills : undefined,
+            capabilityBrief: capabilityContext.capabilityBrief,
           });
 
           await liveStore.updateSession(updated.id, {
@@ -569,7 +1240,10 @@ export async function createServer(config: {
           const result = await driveDesktopAgent({
             client: auth.client,
             model: updated.model,
-            developerPrompt: buildLiveDeveloperPrompt(),
+            developerPrompt: buildLiveDeveloperPrompt({
+              capabilityBrief: capabilityContext.capabilityBrief,
+              skills: capabilityContext.skills,
+            }),
             userContent: instruction,
             previousResponseId: auth.authProvider === "api-key" ? updated.previousResponseId : undefined,
             sidecar,
@@ -1032,6 +1706,8 @@ export async function createServer(config: {
   app.get(/^(?!\/api|\/artifacts).*/, (_request, response) => {
     response.sendFile(path.join(operatorWebDir, "index.html"));
   });
+
+  startAutomationScheduler();
 
   return app;
 }
