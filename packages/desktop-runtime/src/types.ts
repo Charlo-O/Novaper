@@ -12,6 +12,49 @@ export interface WindowInfo {
   isForeground: boolean;
 }
 
+export interface ApplicationMatch {
+  name: string;
+  source: "running_window" | "start_app" | "shortcut" | "app_path" | "explicit_path";
+  launchType: "focus_window" | "shell_app" | "shortcut" | "command";
+  target: string;
+  score: number;
+  handle?: string;
+  title?: string;
+  processName?: string;
+  path?: string;
+}
+
+export interface ResolveApplicationResult {
+  query: string;
+  aliases: string[];
+  candidates: ApplicationMatch[];
+}
+
+export interface OpenApplicationResult {
+  opened: boolean;
+  launchMethod: string;
+  reusedWindow: boolean;
+  pid?: number;
+  candidate?: ApplicationMatch;
+  window?: WindowInfo;
+}
+
+export interface WaitForProcessResult {
+  found: boolean;
+  pid?: number;
+  processName?: string;
+  elapsedMs: number;
+  pids?: number[];
+}
+
+export interface WindowStateResult {
+  matched: boolean;
+  requireForeground: boolean;
+  count: number;
+  window?: WindowInfo;
+  windows: WindowInfo[];
+}
+
 export interface HeartbeatResult {
   machineId: string;
   userName: string;

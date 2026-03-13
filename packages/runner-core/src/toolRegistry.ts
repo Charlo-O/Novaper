@@ -316,6 +316,46 @@ export function createToolRegistry(
       execute: async () => sidecar.listWindows(),
     },
     {
+      name: "resolve_application",
+      description: "Resolve an app name to system-level launch candidates such as running windows, Start menu apps, shortcuts, or App Paths. Use this before opening desktop software.",
+      parameters: {
+        type: "object",
+        additionalProperties: false,
+        required: ["name"],
+        properties: {
+          name: { type: "string" },
+          aliases: { type: "array", items: { type: "string" } },
+        },
+      },
+      execute: async (args) =>
+        sidecar.resolveApplication({
+          name: String(args.name),
+          aliases: Array.isArray(args.aliases) ? args.aliases.map((alias) => String(alias)) : undefined,
+        }),
+    },
+    {
+      name: "open_application",
+      description: "Open desktop software using the narrowest reliable OS-level launch path. Prefer this over clicking taskbar or desktop icons.",
+      parameters: {
+        type: "object",
+        additionalProperties: false,
+        required: ["name"],
+        properties: {
+          name: { type: "string" },
+          aliases: { type: "array", items: { type: "string" } },
+          arguments: { type: "array", items: { type: "string" } },
+          preferWindowReuse: { type: "boolean" },
+        },
+      },
+      execute: async (args) =>
+        sidecar.openApplication({
+          name: String(args.name),
+          aliases: Array.isArray(args.aliases) ? args.aliases.map((alias) => String(alias)) : undefined,
+          arguments: Array.isArray(args.arguments) ? args.arguments.map((arg) => String(arg)) : undefined,
+          preferWindowReuse: args.preferWindowReuse !== false,
+        }),
+    },
+    {
       name: "focus_window",
       description: "Bring an existing window to the foreground by handle or partial title. Prefer this over blind clicks.",
       parameters: {
@@ -327,6 +367,69 @@ export function createToolRegistry(
         },
       },
       execute: async (args) => sidecar.focusWindow({ handle: args.handle as string | undefined, titleContains: args.titleContains as string | undefined }),
+    },
+    {
+      name: "wait_for_process",
+      description: "Wait for a process to appear after launching software. Use this to verify that app startup actually happened.",
+      parameters: {
+        type: "object",
+        additionalProperties: false,
+        properties: {
+          pid: { type: "number" },
+          processName: { type: "string" },
+          timeoutMs: { type: "number" },
+        },
+      },
+      execute: async (args) =>
+        sidecar.waitForProcess({
+          pid: typeof args.pid === "number" ? args.pid : undefined,
+          processName: typeof args.processName === "string" ? args.processName : undefined,
+          timeoutMs: typeof args.timeoutMs === "number" ? args.timeoutMs : undefined,
+        }),
+    },
+    {
+      name: "wait_for_window",
+      description: "Wait for a target desktop window to appear and optionally become foreground. Use this after opening or switching apps.",
+      parameters: {
+        type: "object",
+        additionalProperties: false,
+        properties: {
+          handle: { type: "string" },
+          titleContains: { type: "string" },
+          processName: { type: "string" },
+          timeoutMs: { type: "number" },
+          requireForeground: { type: "boolean" },
+        },
+      },
+      execute: async (args) =>
+        sidecar.waitForWindow({
+          handle: typeof args.handle === "string" ? args.handle : undefined,
+          titleContains: typeof args.titleContains === "string" ? args.titleContains : undefined,
+          processName: typeof args.processName === "string" ? args.processName : undefined,
+          timeoutMs: typeof args.timeoutMs === "number" ? args.timeoutMs : undefined,
+          requireForeground: args.requireForeground === true,
+        }),
+    },
+    {
+      name: "verify_window_state",
+      description: "Verify that the intended app window exists and matches the expected title, process, or foreground state before declaring success.",
+      parameters: {
+        type: "object",
+        additionalProperties: false,
+        properties: {
+          handle: { type: "string" },
+          titleContains: { type: "string" },
+          processName: { type: "string" },
+          requireForeground: { type: "boolean" },
+        },
+      },
+      execute: async (args) =>
+        sidecar.verifyWindowState({
+          handle: typeof args.handle === "string" ? args.handle : undefined,
+          titleContains: typeof args.titleContains === "string" ? args.titleContains : undefined,
+          processName: typeof args.processName === "string" ? args.processName : undefined,
+          requireForeground: args.requireForeground === true,
+        }),
     },
     {
       name: "launch_process",
@@ -421,7 +524,7 @@ export function createToolRegistry(
     },
     {
       name: "uia_find",
-      description: "Find accessible UI Automation elements in a Windows app. Prefer this over vision clicks whenever possible.",
+      description: "Find accessible UI Automation elements in a Windows app. Prefer this over vision clicks whenever possible. If it returns no matches or an error in a custom-drawn app, switch to screenshot-driven desktop_actions instead of repeating the same query.",
       parameters: {
         type: "object",
         additionalProperties: false,
@@ -474,7 +577,7 @@ export function createToolRegistry(
     },
     {
       name: "uia_set_value",
-      description: "Set text into the first matching accessible edit field. Prefer this over simulated typing for forms.",
+      description: "Set text into the first matching accessible edit field. Prefer this over simulated typing for forms. If the target app does not expose a writable edit field, switch to desktop_actions and keyboard input.",
       parameters: {
         type: "object",
         additionalProperties: false,
@@ -544,7 +647,7 @@ export function createToolRegistry(
     {
       name: "detect_elements",
       description:
-        "Detect structured UI elements on the current screen using UI Automation. Returns clickable elements and text elements for structured interaction planning.",
+        "Detect structured UI elements on the current screen using UI Automation. Returns clickable elements and text elements for structured interaction planning. If this is empty or unreliable, inspect the screenshot and continue with desktop_actions.",
       parameters: {
         type: "object",
         additionalProperties: false,

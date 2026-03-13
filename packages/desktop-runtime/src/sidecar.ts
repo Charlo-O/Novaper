@@ -1,11 +1,16 @@
 import { invokePowerShell } from "./powershell.js";
 import type {
+  ApplicationMatch,
   ComputerAction,
   ExecActionsResult,
   HeartbeatResult,
+  OpenApplicationResult,
+  ResolveApplicationResult,
   ScreenshotResult,
   UiElementInfo,
   UiSelector,
+  WaitForProcessResult,
+  WindowStateResult,
   WindowInfo,
 } from "./types.js";
 
@@ -18,8 +23,44 @@ export class DesktopSidecar {
     return invokePowerShell("list_windows");
   }
 
+  resolveApplication(args: { name: string; aliases?: string[] }): Promise<ResolveApplicationResult> {
+    return invokePowerShell("resolve_application", args);
+  }
+
+  openApplication(args: {
+    name: string;
+    aliases?: string[];
+    arguments?: string[];
+    preferWindowReuse?: boolean;
+  }): Promise<OpenApplicationResult> {
+    return invokePowerShell("open_application", args);
+  }
+
   focusWindow(args: { handle?: string; titleContains?: string }): Promise<{ focused: boolean }> {
     return invokePowerShell("focus_window", args);
+  }
+
+  waitForProcess(args: { pid?: number; processName?: string; timeoutMs?: number }): Promise<WaitForProcessResult> {
+    return invokePowerShell("wait_for_process", args);
+  }
+
+  waitForWindow(args: {
+    handle?: string;
+    titleContains?: string;
+    processName?: string;
+    timeoutMs?: number;
+    requireForeground?: boolean;
+  }): Promise<WindowStateResult> {
+    return invokePowerShell("wait_for_window", args);
+  }
+
+  verifyWindowState(args: {
+    handle?: string;
+    titleContains?: string;
+    processName?: string;
+    requireForeground?: boolean;
+  }): Promise<WindowStateResult> {
+    return invokePowerShell("verify_window_state", args);
   }
 
   heartbeat(): Promise<HeartbeatResult> {
@@ -46,8 +87,18 @@ export class DesktopSidecar {
     return invokePowerShell("rename_file", args);
   }
 
-  uiaFind(args: { selector: UiSelector }): Promise<UiElementInfo[]> {
-    return invokePowerShell("uia_find", args);
+  async uiaFind(args: { selector: UiSelector }): Promise<UiElementInfo[]> {
+    const result = await invokePowerShell("uia_find", args);
+    if (Array.isArray(result)) {
+      return result as UiElementInfo[];
+    }
+    if (result && typeof result === "object" && "controlType" in result && "boundingRect" in result) {
+      return [result as UiElementInfo];
+    }
+    if (result && typeof result === "object") {
+      return [];
+    }
+    return [];
   }
 
   uiaInvoke(args: { selector: UiSelector }): Promise<{ invoked: boolean; element: UiElementInfo }> {

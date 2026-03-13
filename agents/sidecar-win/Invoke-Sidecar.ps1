@@ -249,6 +249,457 @@ function Focus-Window {
   }
 }
 
+function ConvertTo-NormalizedLookupValue {
+  param([string]$Value)
+
+  if ([string]::IsNullOrWhiteSpace($Value)) {
+    return ""
+  }
+
+  $normalized = $Value.Trim().ToLowerInvariant()
+  $normalized = $normalized -replace "[\s\-_\.]+", ""
+  $normalized = $normalized -replace "[^a-z0-9\u4e00-\u9fff]", ""
+  return $normalized
+}
+
+function Get-ApplicationLookupTerms {
+  param(
+    [string]$Name,
+    [string[]]$Aliases
+  )
+
+  $rawTerms = [System.Collections.Generic.List[string]]::new()
+  foreach ($item in @($Name) + @($Aliases)) {
+    if (-not [string]::IsNullOrWhiteSpace($item)) {
+      $rawTerms.Add($item.Trim()) | Out-Null
+    }
+  }
+
+  $terms = [System.Collections.ArrayList]::new()
+  $seen = [System.Collections.Generic.HashSet[string]]::new()
+  foreach ($raw in $rawTerms) {
+    $normalized = ConvertTo-NormalizedLookupValue $raw
+    if (-not $normalized) {
+      continue
+    }
+    if ($seen.Add($normalized)) {
+      [void]$terms.Add([pscustomobject]@{
+        raw = $raw
+        normalized = $normalized
+      })
+    }
+  }
+
+  return @($terms)
+}
+
+function Get-MatchScore {
+  param(
+    [string]$Value,
+    [object[]]$Terms
+  )
+
+  $candidate = ConvertTo-NormalizedLookupValue $Value
+  if (-not $candidate) {
+    return 0
+  }
+
+  $best = 0
+  foreach ($term in @($Terms)) {
+    $normalized = [string](Get-PropValue -Object $term -Name "normalized" -Default "")
+    $raw = [string](Get-PropValue -Object $term -Name "raw" -Default "")
+    if (-not $normalized) {
+      continue
+    }
+
+    if ($candidate -eq $normalized) {
+      $best = [Math]::Max($best, 140)
+      continue
+    }
+
+    if ($candidate.StartsWith($normalized) -or $normalized.StartsWith($candidate)) {
+      $best = [Math]::Max($best, 115)
+      continue
+    }
+
+    if ($candidate.Contains($normalized) -or $normalized.Contains($candidate)) {
+      $best = [Math]::Max($best, 95)
+      continue
+    }
+
+    if ($raw -and $Value -like "*$raw*") {
+      $best = [Math]::Max($best, 80)
+    }
+  }
+
+  return $best
+}
+
+function Add-ApplicationCandidate {
+  param(
+    [System.Collections.ArrayList]$Matches,
+    [System.Collections.Generic.HashSet[string]]$Seen,
+    [pscustomobject]$Candidate
+  )
+
+  $key = "$($Candidate.launchType)|$($Candidate.target)|$($Candidate.handle)|$($Candidate.processName)"
+  if ($Seen.Add($key)) {
+    [void]$Matches.Add($Candidate)
+  }
+}
+
+function New-ApplicationCandidate {
+  param(
+    [string]$Name,
+    [string]$Source,
+    [string]$LaunchType,
+    [string]$Target,
+    [int]$Score,
+    [string]$Handle = "",
+    [string]$Title = "",
+    [string]$ProcessName = "",
+    [string]$Path = ""
+  )
+
+  return [pscustomobject]@{
+    name = $Name
+    source = $Source
+    launchType = $LaunchType
+    target = $Target
+    score = $Score
+    handle = if ($Handle) { $Handle } else { $null }
+    title = if ($Title) { $Title } else { $null }
+    processName = if ($ProcessName) { $ProcessName } else { $null }
+    path = if ($Path) { $Path } else { $null }
+  }
+}
+
+function Get-StartMenuShortcutRoots {
+  $roots = @(
+    (Join-Path $env:ProgramData "Microsoft\Windows\Start Menu\Programs"),
+    (Join-Path $env:APPDATA "Microsoft\Windows\Start Menu\Programs")
+  )
+
+  return @($roots | Where-Object { Test-Path $_ })
+}
+
+function Get-AppPathRegistryRoots {
+  return @(
+    "HKLM:\Software\Microsoft\Windows\CurrentVersion\App Paths",
+    "HKLM:\Software\WOW6432Node\Microsoft\Windows\CurrentVersion\App Paths",
+    "HKCU:\Software\Microsoft\Windows\CurrentVersion\App Paths"
+  )
+}
+
+function Get-MatchingWindows {
+  param(
+    [string]$Handle,
+    [string]$TitleContains,
+    [string]$ProcessName,
+    [bool]$RequireForeground = $false
+  )
+
+  $windows = @(Get-WindowList | Where-Object {
+      $matches = $true
+      if ($Handle) {
+        $matches = $matches -and ($_.handle -eq $Handle)
+      }
+      if ($TitleContains) {
+        $matches = $matches -and ($_.title -like "*$TitleContains*")
+      }
+      if ($ProcessName) {
+        $matches = $matches -and ($_.processName -ieq $ProcessName)
+      }
+      if ($RequireForeground) {
+        $matches = $matches -and [bool]$_.isForeground
+      }
+      $matches
+    })
+
+  return @($windows)
+}
+
+function Resolve-ApplicationCandidates {
+  param(
+    [string]$Name,
+    [string[]]$Aliases
+  )
+
+  $terms = Get-ApplicationLookupTerms -Name $Name -Aliases $Aliases
+  $matches = [System.Collections.ArrayList]::new()
+  $seen = [System.Collections.Generic.HashSet[string]]::new()
+
+  if (-not [string]::IsNullOrWhiteSpace($Name) -and (Test-Path -LiteralPath $Name)) {
+    $resolved = (Resolve-Path -LiteralPath $Name).Path
+    Add-ApplicationCandidate -Matches $matches -Seen $seen -Candidate (
+      New-ApplicationCandidate -Name ([System.IO.Path]::GetFileNameWithoutExtension($resolved)) -Source "explicit_path" -LaunchType "command" -Target $resolved -Score 200 -Path $resolved
+    )
+  }
+
+  foreach ($window in @(Get-WindowList)) {
+    $score = [Math]::Max(
+      (Get-MatchScore -Value ([string]$window.title) -Terms $terms),
+      (Get-MatchScore -Value ([string]$window.processName) -Terms $terms)
+    )
+    if ($score -le 0) {
+      continue
+    }
+
+    if ($window.isForeground) {
+      $score += 10
+    }
+
+    Add-ApplicationCandidate -Matches $matches -Seen $seen -Candidate (
+      New-ApplicationCandidate -Name ([string]$window.title) -Source "running_window" -LaunchType "focus_window" -Target ([string]$window.handle) -Score $score -Handle ([string]$window.handle) -Title ([string]$window.title) -ProcessName ([string]$window.processName)
+    )
+  }
+
+  try {
+    foreach ($app in @(Get-StartApps)) {
+      $score = Get-MatchScore -Value ([string]$app.Name) -Terms $terms
+      if ($score -le 0) {
+        continue
+      }
+
+      Add-ApplicationCandidate -Matches $matches -Seen $seen -Candidate (
+        New-ApplicationCandidate -Name ([string]$app.Name) -Source "start_app" -LaunchType "shell_app" -Target ([string]$app.AppID) -Score ($score + 5)
+      )
+    }
+  } catch {
+    # Get-StartApps is best-effort.
+  }
+
+  foreach ($root in @(Get-StartMenuShortcutRoots)) {
+    foreach ($shortcut in @(Get-ChildItem -Path $root -Filter *.lnk -Recurse -File -ErrorAction SilentlyContinue)) {
+      $displayName = [System.IO.Path]::GetFileNameWithoutExtension($shortcut.Name)
+      $score = Get-MatchScore -Value $displayName -Terms $terms
+      if ($score -le 0) {
+        continue
+      }
+
+      Add-ApplicationCandidate -Matches $matches -Seen $seen -Candidate (
+        New-ApplicationCandidate -Name $displayName -Source "shortcut" -LaunchType "shortcut" -Target $shortcut.FullName -Score $score -Path $shortcut.FullName
+      )
+    }
+  }
+
+  foreach ($root in @(Get-AppPathRegistryRoots)) {
+    if (-not (Test-Path $root)) {
+      continue
+    }
+
+    foreach ($entry in @(Get-ChildItem -Path $root -ErrorAction SilentlyContinue)) {
+      try {
+        $registryKey = Get-Item -Path $entry.PSPath -ErrorAction Stop
+        $exePath = [string]$registryKey.GetValue("")
+        $displayName = [System.IO.Path]::GetFileNameWithoutExtension([string]$entry.PSChildName)
+        $score = [Math]::Max(
+          (Get-MatchScore -Value $displayName -Terms $terms),
+          (Get-MatchScore -Value ([System.IO.Path]::GetFileNameWithoutExtension($exePath)) -Terms $terms)
+        )
+        if ($score -le 0 -or -not $exePath) {
+          continue
+        }
+
+        Add-ApplicationCandidate -Matches $matches -Seen $seen -Candidate (
+          New-ApplicationCandidate -Name $displayName -Source "app_path" -LaunchType "command" -Target $exePath -Score $score -Path $exePath
+        )
+      } catch {
+        # Ignore invalid registry entries.
+      }
+    }
+  }
+
+  $sorted = @($matches | Sort-Object -Property @{ Expression = "score"; Descending = $true }, @{ Expression = "name"; Descending = $false })
+  return [pscustomobject]@{
+    query = $Name
+    aliases = @($Aliases | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
+    candidates = $sorted
+  }
+}
+
+function Start-ApplicationCandidate {
+  param(
+    [pscustomobject]$Candidate,
+    [string[]]$Arguments
+  )
+
+  switch ([string]$Candidate.launchType) {
+    "focus_window" {
+      $focus = Focus-Window -Handle ([string]$Candidate.handle) -TitleContains $null
+      $window = @(Get-MatchingWindows -Handle ([string]$Candidate.handle) -TitleContains $null -ProcessName $null | Select-Object -First 1)
+      return @{
+        opened = [bool]$focus.focused
+        launchMethod = "focus_window"
+        reusedWindow = $true
+        candidate = $Candidate
+        window = if ($window.Count -gt 0) { $window[0] } else { $null }
+      }
+    }
+    "shell_app" {
+      Start-Process -FilePath "explorer.exe" -ArgumentList ("shell:AppsFolder\" + [string]$Candidate.target) | Out-Null
+      return @{
+        opened = $true
+        launchMethod = "shell_app"
+        reusedWindow = $false
+        candidate = $Candidate
+      }
+    }
+    "shortcut" {
+      $startArgs = @{
+        FilePath = [string]$Candidate.target
+        PassThru = $true
+      }
+      if (@($Arguments).Count -gt 0) {
+        $startArgs["ArgumentList"] = $Arguments
+      }
+      $process = Start-Process @startArgs
+      return @{
+        opened = $true
+        launchMethod = "shortcut"
+        reusedWindow = $false
+        pid = $process.Id
+        candidate = $Candidate
+      }
+    }
+    "command" {
+      $startArgs = @{
+        FilePath = [string]$Candidate.target
+        PassThru = $true
+      }
+      if (@($Arguments).Count -gt 0) {
+        $startArgs["ArgumentList"] = $Arguments
+      }
+      $process = Start-Process @startArgs
+      return @{
+        opened = $true
+        launchMethod = "command"
+        reusedWindow = $false
+        pid = $process.Id
+        candidate = $Candidate
+      }
+    }
+    default {
+      throw "Unsupported launch type: $($Candidate.launchType)"
+    }
+  }
+}
+
+function Open-Application {
+  param(
+    [string]$Name,
+    [string[]]$Aliases,
+    [string[]]$Arguments,
+    [bool]$PreferWindowReuse = $true
+  )
+
+  $resolved = Resolve-ApplicationCandidates -Name $Name -Aliases $Aliases
+  $candidates = @($resolved.candidates)
+  if ($candidates.Count -eq 0) {
+    throw "No application candidates found for: $Name"
+  }
+
+  $selected = $null
+  if ($PreferWindowReuse) {
+    $selected = $candidates | Select-Object -First 1
+  } else {
+    $selected = $candidates | Where-Object { $_.launchType -ne "focus_window" } | Select-Object -First 1
+    if ($null -eq $selected) {
+      $selected = $candidates | Select-Object -First 1
+    }
+  }
+
+  return Start-ApplicationCandidate -Candidate ([pscustomobject]$selected) -Arguments $Arguments
+}
+
+function Wait-ForProcessAvailability {
+  param(
+    [Nullable[int]]$TargetProcessId,
+    [string]$ProcessName,
+    [int]$TimeoutMs = 5000
+  )
+
+  $watch = [System.Diagnostics.Stopwatch]::StartNew()
+  while ($watch.ElapsedMilliseconds -lt $TimeoutMs) {
+    if ($null -ne $TargetProcessId) {
+      try {
+        $process = Get-Process -Id ([int]$TargetProcessId) -ErrorAction Stop
+        return @{
+          found = $true
+          pid = $process.Id
+          processName = $process.ProcessName
+          elapsedMs = [int]$watch.ElapsedMilliseconds
+          pids = @($process.Id)
+        }
+      } catch {
+        # keep waiting
+      }
+    } elseif ($ProcessName) {
+      $processes = @(Get-Process -Name $ProcessName -ErrorAction SilentlyContinue)
+      if ($processes.Count -gt 0) {
+        return @{
+          found = $true
+          pid = $processes[0].Id
+          processName = $processes[0].ProcessName
+          elapsedMs = [int]$watch.ElapsedMilliseconds
+          pids = @($processes | ForEach-Object { $_.Id })
+        }
+      }
+    } else {
+      throw "wait_for_process requires pid or processName."
+    }
+
+    Start-Sleep -Milliseconds 250
+  }
+
+  return @{
+    found = $false
+    pid = if ($null -ne $TargetProcessId) { [int]$TargetProcessId } else { $null }
+    processName = if ($ProcessName) { $ProcessName } else { $null }
+    elapsedMs = [int]$watch.ElapsedMilliseconds
+    pids = @()
+  }
+}
+
+function Verify-WindowState {
+  param(
+    [string]$Handle,
+    [string]$TitleContains,
+    [string]$ProcessName,
+    [bool]$RequireForeground = $false
+  )
+
+  $windows = @(Get-MatchingWindows -Handle $Handle -TitleContains $TitleContains -ProcessName $ProcessName -RequireForeground $RequireForeground)
+  return @{
+    matched = ($windows.Count -gt 0)
+    requireForeground = $RequireForeground
+    count = $windows.Count
+    window = if ($windows.Count -gt 0) { $windows[0] } else { $null }
+    windows = $windows
+  }
+}
+
+function Wait-ForWindowState {
+  param(
+    [string]$Handle,
+    [string]$TitleContains,
+    [string]$ProcessName,
+    [int]$TimeoutMs = 5000,
+    [bool]$RequireForeground = $false
+  )
+
+  $watch = [System.Diagnostics.Stopwatch]::StartNew()
+  while ($watch.ElapsedMilliseconds -lt $TimeoutMs) {
+    $result = Verify-WindowState -Handle $Handle -TitleContains $TitleContains -ProcessName $ProcessName -RequireForeground $RequireForeground
+    if ($result.matched) {
+      return $result
+    }
+    Start-Sleep -Milliseconds 250
+  }
+
+  return Verify-WindowState -Handle $Handle -TitleContains $TitleContains -ProcessName $ProcessName -RequireForeground $RequireForeground
+}
+
 function Get-ControlTypeValue {
   param([string]$Name)
 
@@ -301,7 +752,7 @@ function New-Condition {
   if ($processName) {
     $processes = Get-Process -Name ([string]$processName) -ErrorAction SilentlyContinue
     if ($processes) {
-      $ids = $processes | ForEach-Object { [int]$_.Id }
+      $ids = @($processes | ForEach-Object { [int]$_.Id })
       if ($ids.Count -eq 1) {
         $conditions.Add([System.Windows.Automation.PropertyCondition]::new([System.Windows.Automation.AutomationElement]::ProcessIdProperty, $ids[0]))
       }
@@ -742,11 +1193,27 @@ function Invoke-Command {
     "capture_screenshot" {
       return Capture-ScreenshotData
     }
+    "resolve_application" {
+      return Resolve-ApplicationCandidates -Name ([string](Get-PropValue -Object $argsObject -Name "name")) -Aliases ([string[]](Get-PropValue -Object $argsObject -Name "aliases" -Default @()))
+    }
+    "open_application" {
+      return Open-Application -Name ([string](Get-PropValue -Object $argsObject -Name "name")) -Aliases ([string[]](Get-PropValue -Object $argsObject -Name "aliases" -Default @())) -Arguments ([string[]](Get-PropValue -Object $argsObject -Name "arguments" -Default @())) -PreferWindowReuse ([bool](Get-PropValue -Object $argsObject -Name "preferWindowReuse" -Default $true))
+    }
     "list_windows" {
       return Get-WindowList
     }
     "focus_window" {
       return Focus-Window -Handle (Get-PropValue -Object $argsObject -Name "handle") -TitleContains (Get-PropValue -Object $argsObject -Name "titleContains")
+    }
+    "wait_for_process" {
+      $pidValue = Get-PropValue -Object $argsObject -Name "pid"
+      return Wait-ForProcessAvailability -TargetProcessId $(if ($null -ne $pidValue) { [int]$pidValue } else { $null }) -ProcessName ([string](Get-PropValue -Object $argsObject -Name "processName")) -TimeoutMs ([int](Get-PropValue -Object $argsObject -Name "timeoutMs" -Default 5000))
+    }
+    "wait_for_window" {
+      return Wait-ForWindowState -Handle ([string](Get-PropValue -Object $argsObject -Name "handle")) -TitleContains ([string](Get-PropValue -Object $argsObject -Name "titleContains")) -ProcessName ([string](Get-PropValue -Object $argsObject -Name "processName")) -TimeoutMs ([int](Get-PropValue -Object $argsObject -Name "timeoutMs" -Default 5000)) -RequireForeground ([bool](Get-PropValue -Object $argsObject -Name "requireForeground" -Default $false))
+    }
+    "verify_window_state" {
+      return Verify-WindowState -Handle ([string](Get-PropValue -Object $argsObject -Name "handle")) -TitleContains ([string](Get-PropValue -Object $argsObject -Name "titleContains")) -ProcessName ([string](Get-PropValue -Object $argsObject -Name "processName")) -RequireForeground ([bool](Get-PropValue -Object $argsObject -Name "requireForeground" -Default $false))
     }
     "launch_process" {
       $argumentsValue = Get-PropValue -Object $argsObject -Name "args"

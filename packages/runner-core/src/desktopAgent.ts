@@ -15,6 +15,32 @@ export interface DesktopAgentEvent {
   payload?: unknown;
 }
 
+export interface DesktopAgentToolCall {
+  name: string;
+  args: unknown;
+  result: unknown;
+}
+
+function serializeToolError(error: unknown) {
+  if (error instanceof Error) {
+    return {
+      ok: false,
+      error: {
+        message: error.message,
+        name: error.name,
+      },
+    };
+  }
+
+  return {
+    ok: false,
+    error: {
+      message: String(error),
+      name: "ToolExecutionError",
+    },
+  };
+}
+
 interface DriveDesktopAgentContext {
   client: ResponsesClient;
   model: string;
@@ -134,6 +160,7 @@ export async function driveDesktopAgent(context: DriveDesktopAgentContext): Prom
   summary: string;
   responseId: string;
   latestScreenshotUrl?: string;
+  toolCalls: DesktopAgentToolCall[];
 }> {
   const visualGroundingEnabled = context.client.supportsImageInput === true && context.client.supportsComputerTool === false;
   const toolSessionId = context.sessionId ?? `ephemeral-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
@@ -157,7 +184,7 @@ export async function driveDesktopAgent(context: DriveDesktopAgentContext): Prom
   let lastExecutedToolSignature: { name: string; signature: string } | undefined;
   let executedToolCallCount = 0;
   let remindedToolUse = false;
-  const collectedToolCalls: Array<{ name: string; args: unknown; result: unknown }> = [];
+  const collectedToolCalls: DesktopAgentToolCall[] = [];
 
   // Build memory-enhanced developer prompt
   let enhancedPrompt = context.developerPrompt;
@@ -258,6 +285,7 @@ export async function driveDesktopAgent(context: DriveDesktopAgentContext): Prom
         summary: outputText || "Model finished without additional tool calls.",
         responseId: response.id,
         latestScreenshotUrl,
+        toolCalls: collectedToolCalls,
       };
     }
 
@@ -287,7 +315,7 @@ export async function driveDesktopAgent(context: DriveDesktopAgentContext): Prom
               reason:
                 "The same desktop_actions request was already executed on the previous turn. Review the latest screenshot and either finish or choose a different action.",
             }
-          : await tool.execute(args);
+          : await tool.execute(args).catch((error) => serializeToolError(error));
 
       executedToolCallCount += 1;
 
@@ -300,7 +328,7 @@ export async function driveDesktopAgent(context: DriveDesktopAgentContext): Prom
           : undefined;
       await context.onEvent({
         type: "tool_result",
-        level: "info",
+        level: result && typeof result === "object" && "ok" in result && result.ok === false ? "warning" : "info",
         message: `Function result: ${call.name}`,
         payload: result,
       });

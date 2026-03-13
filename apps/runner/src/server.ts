@@ -8,7 +8,7 @@ import { RunStore } from "./store.js";
 import { LiveSessionStore } from "./liveStore.js";
 import { executeRun } from "../../../packages/runner-core/src/runExecutor.js";
 import { DesktopSidecar } from "../../../packages/desktop-runtime/src/sidecar.js";
-import { driveDesktopAgent } from "../../../packages/runner-core/src/desktopAgent.js";
+import { driveDesktopAgent, type DesktopAgentToolCall } from "../../../packages/runner-core/src/desktopAgent.js";
 import { drivePiAgent } from "../../../packages/runner-core/src/piAgent.js";
 import {
   buildActiveSkillsPrompt,
@@ -17,7 +17,15 @@ import {
   type PromptSkill,
 } from "../../../packages/runner-core/src/capabilityProfile.js";
 import { classifyInstruction, type AgentRoute } from "../../../packages/runner-core/src/instructionClassifier.js";
-import { planTasks, getNextTask, updateTaskStatus, isPlanComplete, formatPlan } from "../../../packages/runner-core/src/taskPlanner.js";
+import {
+  planTasks,
+  getNextTask,
+  updateTaskStatus,
+  isPlanComplete,
+  formatPlan,
+  type TaskExecutionMethod,
+  type TaskPlanItem,
+} from "../../../packages/runner-core/src/taskPlanner.js";
 import { AuthService } from "./authService.js";
 import { getProxyStatus } from "./networkProxy.js";
 import { LogCollector } from "./logCollector.js";
@@ -27,6 +35,7 @@ import { BrowserSessionManager } from "../../../packages/browser-runtime/src/bro
 import { AutomationStore } from "./automationStore.js";
 import { DeviceStore, type StoredDeviceRecord } from "./deviceStore.js";
 import { PluginStore } from "./pluginStore.js";
+import type { ResponsesClient } from "../../../packages/runner-core/src/responsesClient.js";
 
 function normalizeRequestedProvider(input: unknown) {
   return input === "api-key" || input === "codex-oauth" ? input : undefined;
@@ -36,26 +45,321 @@ function authErrorStatus(message: string) {
   return /not configured|not authenticated|No auth provider/i.test(message) ? 400 : 500;
 }
 
+interface VerificationAssessment {
+  verified: boolean;
+  evidence: string[];
+  missingReason?: string;
+}
+
+interface VisualVerificationAssessment {
+  verified: boolean;
+  evidence: string[];
+  reason?: string;
+}
+
+function summarizeError(error: unknown) {
+  return error instanceof Error ? error.message : String(error);
+}
+
+function taskAllowsVisionFallback(task: TaskPlanItem) {
+  if ((task.preferredMethods ?? []).includes("vision")) {
+    return true;
+  }
+
+  return (task.fallbackPolicy ?? []).some((item) => /visual|screenshot|desktop_actions|vision/i.test(item));
+}
+
+function extractResponseText(response: { output_text?: string; output?: unknown[] }) {
+  if (typeof response.output_text === "string" && response.output_text.trim()) {
+    return response.output_text.trim();
+  }
+
+  const output = Array.isArray(response.output) ? response.output : [];
+  return output
+    .flatMap((item) => {
+      if (!item || typeof item !== "object" || !("type" in item) || item.type !== "message") {
+        return [];
+      }
+
+      const content = "content" in item && Array.isArray(item.content) ? item.content : [];
+      return content
+        .map((part) => {
+          if (part && typeof part === "object" && "text" in part && typeof part.text === "string") {
+            return part.text;
+          }
+          return "";
+        })
+        .filter(Boolean);
+    })
+    .join("\n")
+    .trim();
+}
+
+function parseVisualVerificationAssessment(text: string): VisualVerificationAssessment {
+  const trimmed = text.trim();
+  const fencedMatch = trimmed.match(/```(?:json)?\s*([\s\S]*?)```/i);
+  const candidate = fencedMatch?.[1]?.trim() ?? trimmed;
+  try {
+    const parsed = JSON.parse(candidate) as Record<string, unknown>;
+    const evidence = Array.isArray(parsed.evidence)
+      ? parsed.evidence.map((item) => String(item)).filter(Boolean)
+      : [];
+    return {
+      verified: parsed.verified === true,
+      evidence,
+      reason: typeof parsed.reason === "string" && parsed.reason.trim() ? parsed.reason.trim() : undefined,
+    };
+  } catch {
+    return {
+      verified: false,
+      evidence: [],
+      reason: trimmed || "Visual verification response could not be parsed.",
+    };
+  }
+}
+
+async function runVisualVerificationPass(input: {
+  client: ResponsesClient;
+  model: string;
+  sidecar: DesktopSidecar;
+  task: TaskPlanItem;
+}) {
+  const screenshot = await input.sidecar.captureScreenshot();
+  const response = await input.client.createResponse({
+    model: input.model,
+    input: [
+      {
+        role: "developer",
+        content:
+          "You verify whether a desktop step is complete from a screenshot. Use only visible evidence. Return JSON only with keys verified (boolean), evidence (array of short strings), and reason (string, optional). Set verified=true only when the screenshot clearly shows the goal has been achieved.",
+      },
+      {
+        role: "user",
+        content: [
+          {
+            type: "input_text",
+            text: [
+              "[Visual Verification]",
+              `Step title: ${input.task.title}`,
+              `Goal: ${input.task.description}`,
+              ...(input.task.successCriteria?.length
+                ? ["Success criteria:", ...input.task.successCriteria.map((criterion) => `- ${criterion}`)]
+                : []),
+              `Screen size: ${screenshot.width}x${screenshot.height}`,
+              "Judge only from what is visible in this screenshot. If the screenshot does not clearly prove completion, return verified=false.",
+            ].join("\n"),
+          },
+          {
+            type: "input_image",
+            image_url: `data:image/png;base64,${screenshot.imageBase64}`,
+            detail: "high",
+          },
+        ],
+      },
+    ],
+  });
+
+  return parseVisualVerificationAssessment(extractResponseText(response));
+}
+
+function formatMethod(method: TaskExecutionMethod) {
+  switch (method) {
+    case "system_launch":
+      return "system-level launch";
+    case "browser_dom":
+      return "browser DOM tools";
+    case "uia":
+      return "UI Automation";
+    case "window_tools":
+      return "window/process tools";
+    case "vision":
+      return "visual fallback";
+    case "cli":
+      return "CLI tools";
+    default:
+      return method;
+  }
+}
+
+function buildTaskExecutionInstruction(task: TaskPlanItem) {
+  const lines = [
+    "[Planned Step]",
+    `Step title: ${task.title}`,
+    `Goal: ${task.description}`,
+    `Atomic step: ${task.atomic === false ? "no" : "yes"}`,
+  ];
+
+  if (task.preferredMethods && task.preferredMethods.length > 0) {
+    lines.push(`Preferred method order: ${task.preferredMethods.map(formatMethod).join(" -> ")}`);
+  }
+
+  if (task.successCriteria && task.successCriteria.length > 0) {
+    lines.push("Success criteria:");
+    for (const criterion of task.successCriteria) {
+      lines.push(`- ${criterion}`);
+    }
+  }
+
+  if (task.fallbackPolicy && task.fallbackPolicy.length > 0) {
+    lines.push("Fallback policy:");
+    for (const item of task.fallbackPolicy) {
+      lines.push(`- ${item}`);
+    }
+  }
+
+  if (task.replanHint) {
+    lines.push(`Re-plan hint: ${task.replanHint}`);
+  }
+
+  lines.push("Execute only the current step.");
+  lines.push("Use the preferred method order whenever possible.");
+  if (taskAllowsVisionFallback(task)) {
+    lines.push("If UI Automation or detect_elements returns no match, an empty result, or an error, stop retrying the same selector and switch to screenshot-driven desktop_actions.");
+  }
+  lines.push("Before you finish, verify the success criteria with tools or a fresh observation.");
+  lines.push("If the criteria are not satisfied, do not declare success. Either perform one corrective action or explain that the step is still incomplete.");
+
+  return lines.join("\n");
+}
+
+function buildVerificationFollowUpInstruction(task: TaskPlanItem, assessment: VerificationAssessment) {
+  const lines = [
+    "[Verification Pass]",
+    `Re-check the planned step: ${task.title}`,
+    `Goal: ${task.description}`,
+    assessment.missingReason ? `Missing verification: ${assessment.missingReason}` : "Missing verification evidence.",
+    "Do not restart the whole task.",
+    "First inspect the current state and verify whether the step has actually succeeded.",
+    "Prefer verification tools such as verify_window_state, wait_for_window, wait_for_process, browser_snapshot, browser_read, browser_wait_for, uia_find, or list_windows.",
+    "If the step is not complete, you may take at most one corrective action and then verify again.",
+    "Do not declare completion without evidence.",
+  ];
+
+  if (taskAllowsVisionFallback(task)) {
+    lines.push("If UI Automation tools or detect_elements fail, return empty, or stay unreliable, inspect the latest screenshot and continue with desktop_actions instead of repeating the same UIA query.");
+    lines.push("After a visual corrective action, re-check the visible result before answering.");
+  }
+
+  return lines.join("\n");
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === "object";
+}
+
+function isNonEmptyArray(value: unknown): value is unknown[] {
+  return Array.isArray(value) && value.length > 0;
+}
+
+function evaluateTaskVerification(task: TaskPlanItem, toolCalls: DesktopAgentToolCall[]): VerificationAssessment {
+  const evidence: string[] = [];
+  let processVerified = false;
+  let windowVerified = false;
+  let browserVerified = false;
+  let uiaVerified = false;
+
+  for (const call of toolCalls) {
+    const result = call.result;
+    if (call.name === "wait_for_process" && isRecord(result) && result.found === true) {
+      processVerified = true;
+      evidence.push(`process detected via ${call.name}`);
+    }
+
+    if ((call.name === "wait_for_window" || call.name === "verify_window_state") && isRecord(result) && result.matched === true) {
+      windowVerified = true;
+      evidence.push(`window verified via ${call.name}`);
+    }
+
+    if (call.name === "focus_window" && isRecord(result) && result.focused === true) {
+      windowVerified = true;
+      evidence.push("window focused");
+    }
+
+    if (call.name === "open_application" && isRecord(result)) {
+      if (result.reusedWindow === true || isRecord(result.window)) {
+        windowVerified = true;
+        evidence.push(`application reused existing window via ${String(result.launchMethod ?? "open_application")}`);
+      }
+    }
+
+    if ((call.name === "browser_snapshot" || call.name === "browser_read" || call.name === "browser_wait_for") && isRecord(result)) {
+      if (result.strategy === "playwright") {
+        browserVerified = true;
+        evidence.push(`browser state verified via ${call.name}`);
+      }
+    }
+
+    if (call.name === "uia_find" && isNonEmptyArray(result)) {
+      uiaVerified = true;
+      evidence.push("UI Automation found matching elements");
+    }
+
+    if ((call.name === "uia_invoke" || call.name === "uia_set_value") && isRecord(result)) {
+      if (result.invoked === true || result.updated === true) {
+        uiaVerified = true;
+        evidence.push(`UI Automation confirmed via ${call.name}`);
+      }
+    }
+  }
+
+  const methods = new Set(task.preferredMethods ?? []);
+  const needsBrowser = methods.has("browser_dom");
+  const needsSystem = methods.has("system_launch") || methods.has("window_tools");
+  const needsUia = methods.has("uia");
+
+  const verified =
+    (needsBrowser && browserVerified) ||
+    (needsSystem && (windowVerified || processVerified)) ||
+    (needsUia && (uiaVerified || windowVerified)) ||
+    (!needsBrowser && !needsSystem && !needsUia && evidence.length > 0);
+
+  if (verified) {
+    return {
+      verified: true,
+      evidence: Array.from(new Set(evidence)),
+    };
+  }
+
+  let missingReason = "No verification signal matched the planned success criteria.";
+  if (needsBrowser && !browserVerified) {
+    missingReason = "The step expected browser verification, but no browser_* verification tool succeeded.";
+  } else if (needsSystem && !windowVerified && !processVerified) {
+    missingReason = "The step expected process or window verification after launch, but none was recorded.";
+  } else if (needsUia && !uiaVerified && !windowVerified) {
+    missingReason = "The step expected UI Automation or window verification, but none was recorded.";
+  }
+
+  return {
+    verified: false,
+    evidence: Array.from(new Set(evidence)),
+    missingReason,
+  };
+}
+
 function buildLiveDeveloperPrompt(options?: {
   capabilityBrief?: string;
   skills?: PromptSkill[];
 }) {
   const sections = [
     [
-    "You are a live Windows desktop assistant similar to an interactive computer-use operator.",
-    "The human is watching the current desktop and will send one instruction at a time.",
-    "For every instruction, inspect the current desktop state before acting.",
-    "Prefer tools in this order: 1) browser_* tools for web pages in Chrome, Edge, or other Chromium browsers, 2) UI Automation and deterministic desktop tools, 3) process/file/window tools, 4) desktop_actions for coordinate-based visual fallback, 5) the computer tool when available.",
-    "When the task is happening inside a web page, use browser_snapshot before interacting and prefer browser_click, browser_type, browser_press_keys, browser_tabs, and browser_read over desktop clicks.",
-    "The browser_* tools use Playwright with a persisted automation profile copied from the local Chromium profile. If any browser_* result reports strategy='visual' or requiresDesktopActions=true, stop relying on DOM selectors and continue with desktop_actions against the attached desktop screenshot.",
-    "Never claim a desktop task is complete until you have used at least one tool during the current instruction.",
-    "WeChat, WPS, and other Qt or custom-drawn apps often expose unreliable UI Automation trees. In those apps, prefer screenshot-driven desktop_actions over stubborn UIA retries.",
-    "For chat apps such as WeChat, verify message delivery on the next screenshot. If the text is still in the input box, try the alternate send method such as Enter, Ctrl+Enter, or clicking the Send button.",
-    "Only say a chat message was sent when a post-action screenshot shows the input box cleared or the message bubble appearing in the conversation.",
-    "Do only what the current user instruction requires. When the instruction is complete, stop and summarize briefly.",
-    "If the instruction is ambiguous, ask a short clarification instead of guessing.",
-    "If you hit UAC, a security boundary, CAPTCHA, or a blocked state, stop and explain the blocker.",
-    "When a desktop screenshot is attached, treat it as the current visual state. Use absolute pixel coordinates from that screenshot for desktop_actions.",
+      "You are a live Windows desktop assistant similar to an interactive computer-use operator.",
+      "The human is watching the current desktop and will send one instruction at a time.",
+      "For every instruction, inspect the current desktop state before acting.",
+      "Work in rolling steps: observe state, perform one minimal verifiable action, verify the result, then decide the next step.",
+      "Prefer tools in this order: 1) browser_* tools for web pages in Chrome, Edge, or other Chromium browsers, 2) UI Automation and deterministic desktop tools, 3) process/file/window tools, 4) desktop_actions for coordinate-based visual fallback, 5) the computer tool when available.",
+      "When the instruction requires opening software, use resolve_application, open_application, wait_for_process, wait_for_window, verify_window_state, and focus_window before any coordinate clicks.",
+      "When the task is happening inside a web page, use browser_snapshot before interacting and prefer browser_click, browser_type, browser_press_keys, browser_tabs, and browser_read over desktop clicks.",
+      "The browser_* tools use Playwright with a persisted automation profile copied from the local Chromium profile. If any browser_* result reports strategy='visual' or requiresDesktopActions=true, stop relying on DOM selectors and continue with desktop_actions against the attached desktop screenshot.",
+      "Never claim a desktop task is complete until you have used at least one tool during the current instruction.",
+      "Never claim success for opening an app unless a process or window check confirms the target exists.",
+      "Never claim success for search, playback, sending, or navigation tasks unless the post-action state visibly confirms the requested outcome.",
+      "WeChat, WPS, and other Qt or custom-drawn apps often expose unreliable UI Automation trees. In those apps, prefer screenshot-driven desktop_actions over stubborn UIA retries.",
+      "For chat apps such as WeChat, verify message delivery on the next screenshot. If the text is still in the input box, try the alternate send method such as Enter, Ctrl+Enter, or clicking the Send button.",
+      "Only say a chat message was sent when a post-action screenshot shows the input box cleared or the message bubble appearing in the conversation.",
+      "Do only what the current user instruction requires. When the instruction is complete, stop and summarize briefly.",
+      "If the instruction is ambiguous, ask a short clarification instead of guessing.",
+      "If you hit UAC, a security boundary, CAPTCHA, or a blocked state, stop and explain the blocker.",
+      "When a desktop screenshot is attached, treat it as the current visual state. Use absolute pixel coordinates from that screenshot for desktop_actions.",
     ].join("\n"),
   ];
 
@@ -1127,6 +1431,8 @@ export async function createServer(config: {
             payload: { plan: formatPlan(plan) },
           });
 
+          let plannerPreviousResponseId = auth.authProvider === "api-key" ? updated.previousResponseId : undefined;
+
           // Execute subtasks sequentially
           while (!isPlanComplete(plan)) {
             if (liveStore.getSession(updated.id)?.stopRequested) {
@@ -1161,6 +1467,7 @@ export async function createServer(config: {
                 updateTaskStatus(plan, task.id, "completed", subResult.summary);
               } else {
                 await memoryManager.initSession(updated.id);
+                const stepInstruction = buildTaskExecutionInstruction(task);
                 const subResult = await driveDesktopAgent({
                   client: auth.client,
                   model: updated.model,
@@ -1168,8 +1475,8 @@ export async function createServer(config: {
                     capabilityBrief: capabilityContext.capabilityBrief,
                     skills: capabilityContext.skills,
                   }),
-                  userContent: task.description,
-                  previousResponseId: auth.authProvider === "api-key" ? updated.previousResponseId : undefined,
+                  userContent: `${stepInstruction}\n\n[User Task]\n${task.description}`,
+                  previousResponseId: plannerPreviousResponseId,
                   sidecar,
                   artifactDir: updated.artifactDir,
                   screenshotBaseUrl: `/artifacts/live/${updated.id}`,
@@ -1182,15 +1489,101 @@ export async function createServer(config: {
                   browserSessionManager,
                   sessionId: updated.id,
                 });
-                updateTaskStatus(plan, task.id, "completed", subResult.summary);
+
+                let combinedSummary = subResult.summary;
+                let latestScreenshotUrl = subResult.latestScreenshotUrl ?? updated.latestScreenshotUrl;
+                let combinedToolCalls = [...subResult.toolCalls];
+                let verification = evaluateTaskVerification(task, combinedToolCalls);
+                plannerPreviousResponseId = auth.authProvider === "api-key" ? subResult.responseId : undefined;
+
+                if (!verification.verified) {
+                  await liveStore.appendEvent(updated.id, {
+                    type: "log",
+                    level: "warning",
+                    message: `Subtask missing verification evidence: ${task.title}`,
+                    payload: {
+                      taskId: task.id,
+                      missingReason: verification.missingReason,
+                      evidence: verification.evidence,
+                    },
+                  });
+
+                  const verifyResult = await driveDesktopAgent({
+                    client: auth.client,
+                    model: updated.model,
+                    developerPrompt: buildLiveDeveloperPrompt(),
+                    userContent: buildVerificationFollowUpInstruction(task, verification),
+                    previousResponseId: plannerPreviousResponseId,
+                    sidecar,
+                    artifactDir: updated.artifactDir,
+                    screenshotBaseUrl: `/artifacts/live/${updated.id}`,
+                    onEvent: async (event) => {
+                      await liveStore.appendEvent(updated.id, event);
+                    },
+                    shouldStop: () => Boolean(liveStore.getSession(updated.id)?.stopRequested),
+                    maxTurns: 8,
+                    memoryManager,
+                    browserSessionManager,
+                    sessionId: updated.id,
+                  });
+
+                  combinedSummary = verifyResult.summary || combinedSummary;
+                  latestScreenshotUrl = verifyResult.latestScreenshotUrl ?? latestScreenshotUrl;
+                  combinedToolCalls = [...combinedToolCalls, ...verifyResult.toolCalls];
+                  verification = evaluateTaskVerification(task, combinedToolCalls);
+                  plannerPreviousResponseId = auth.authProvider === "api-key" ? verifyResult.responseId : plannerPreviousResponseId;
+                }
+
+                if (!verification.verified && taskAllowsVisionFallback(task)) {
+                  await liveStore.appendEvent(updated.id, {
+                    type: "log",
+                    level: "info",
+                    message: `Attempting visual verification fallback: ${task.title}`,
+                    payload: {
+                      taskId: task.id,
+                      missingReason: verification.missingReason,
+                    },
+                  });
+
+                  const visualVerification = await runVisualVerificationPass({
+                    client: auth.client,
+                    model: updated.model,
+                    sidecar,
+                    task,
+                  });
+
+                  if (visualVerification.verified) {
+                    verification = {
+                      verified: true,
+                      evidence: visualVerification.evidence.length > 0
+                        ? visualVerification.evidence.map((item) => `visually verified: ${item}`)
+                        : ["visually verified from current screenshot"],
+                    };
+                  } else if (visualVerification.reason) {
+                    verification = {
+                      ...verification,
+                      missingReason: `${verification.missingReason ?? "Visual fallback did not verify the step."} Visual check: ${visualVerification.reason}`,
+                    };
+                  }
+                }
+
+                if (!verification.verified) {
+                  throw new Error(verification.missingReason ?? "Subtask finished without verification evidence.");
+                }
+
+                const verifiedSummary =
+                  verification.evidence.length > 0
+                    ? `${combinedSummary} [verified: ${verification.evidence.join("; ")}]`
+                    : combinedSummary;
+                updateTaskStatus(plan, task.id, "completed", verifiedSummary);
 
                 await liveStore.updateSession(updated.id, {
-                  previousResponseId: auth.authProvider === "api-key" ? subResult.responseId : undefined,
-                  latestScreenshotUrl: subResult.latestScreenshotUrl ?? updated.latestScreenshotUrl,
+                  previousResponseId: plannerPreviousResponseId,
+                  latestScreenshotUrl,
                 });
               }
             } catch (taskError) {
-              updateTaskStatus(plan, task.id, "failed", taskError instanceof Error ? taskError.message : String(taskError));
+              updateTaskStatus(plan, task.id, "failed", summarizeError(taskError));
             }
           }
 
