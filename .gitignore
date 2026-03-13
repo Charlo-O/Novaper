@@ -12,5 +12,12 @@ data/live-sessions/*
 !data/live-sessions/.gitkeep
 data/runs/*
 !data/runs/.gitkeep
+data/automation/*
+!data/automation/.gitkeep
+data/devices/*
+!data/devices/.gitkeep
+data/memory/global.json
+data/memory/sessions/
 
 output/
+external/

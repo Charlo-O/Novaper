@@ -13,11 +13,14 @@ import {
   createMcpServer,
   updateMcpServer,
   deleteMcpServer,
+  getSystemCapabilities,
   type InstalledSkill,
   type DiscoverableSkill,
   type SkillRepo,
   type McpServerConfig,
   type DiscoverSkillsResult,
+  type CapabilityItem,
+  type CapabilitySnapshot,
 } from '../api';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -755,6 +758,190 @@ function McpServersPage() {
 }
 
 // ---------------------------------------------------------------------------
+// Runtime Capabilities Page
+// ---------------------------------------------------------------------------
+
+function capabilityStatusClass(status: CapabilityItem['status']) {
+  if (status === 'active') {
+    return 'bg-emerald-100 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-300 border-0';
+  }
+
+  return 'bg-amber-100 text-amber-700 dark:bg-amber-900/30 dark:text-amber-300 border-0';
+}
+
+function capabilitySourceLabel(source: CapabilityItem['source']) {
+  switch (source) {
+    case 'skill':
+      return 'Skill';
+    case 'mcp':
+      return 'MCP';
+    default:
+      return 'Built-in';
+  }
+}
+
+function CapabilitiesPage() {
+  const t = useTranslation();
+  const [snapshot, setSnapshot] = useState<CapabilitySnapshot | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [refreshing, setRefreshing] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const refresh = useCallback(async () => {
+    setRefreshing(true);
+    setError(null);
+    try {
+      setSnapshot(await getSystemCapabilities());
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setLoading(false);
+      setRefreshing(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    refresh();
+  }, [refresh]);
+
+  const summaryCards = snapshot
+    ? [
+        {
+          label: 'Built-in',
+          value: snapshot.summary.builtInCount,
+        },
+        {
+          label: 'Active Skills',
+          value: snapshot.summary.activeSkillCount,
+        },
+        {
+          label: 'Enabled MCP',
+          value: snapshot.summary.enabledMcpCount,
+        },
+        {
+          label: 'Routes',
+          value: snapshot.summary.routes.length,
+        },
+      ]
+    : [];
+
+  if (loading && !snapshot) {
+    return (
+      <div className="flex items-center justify-center py-12">
+        <Loader2 className="w-6 h-6 animate-spin text-slate-400" />
+      </div>
+    );
+  }
+
+  return (
+    <div className="space-y-5">
+      <div className="flex items-start justify-between gap-4">
+        <div>
+          <h1 className="text-xl font-bold">Runtime Capabilities</h1>
+          <p className="text-sm text-slate-500 dark:text-slate-400">
+            Milady-style capability catalog for the current Novaper runtime.
+          </p>
+          {snapshot ? (
+            <p className="mt-2 text-xs text-slate-400">
+              {`Updated ${new Date(snapshot.generatedAt).toLocaleString()}`}
+            </p>
+          ) : null}
+        </div>
+        <Button variant="ghost" size="sm" onClick={refresh} disabled={refreshing}>
+          <RefreshCw className={`w-4 h-4 mr-1 ${refreshing ? 'animate-spin' : ''}`} />
+          {t.plugins.refresh}
+        </Button>
+      </div>
+
+      {error ? (
+        <div className="rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700 dark:border-red-900 dark:bg-red-950/40 dark:text-red-300">
+          {error}
+        </div>
+      ) : null}
+
+      {summaryCards.length > 0 ? (
+        <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+          {summaryCards.map(card => (
+            <Card key={card.label}>
+              <CardContent className="px-4 py-4">
+                <div className="text-xs uppercase tracking-[0.18em] text-slate-400">
+                  {card.label}
+                </div>
+                <div className="mt-2 text-2xl font-semibold text-slate-900 dark:text-slate-50">
+                  {card.value}
+                </div>
+              </CardContent>
+            </Card>
+          ))}
+        </div>
+      ) : null}
+
+      <div className="grid gap-4 xl:grid-cols-2">
+        {snapshot?.sections.map(section => (
+          <Card key={section.id} className="overflow-hidden">
+            <CardContent className="px-4 py-4 space-y-4">
+              <div>
+                <h2 className="text-sm font-semibold uppercase tracking-[0.16em] text-slate-500 dark:text-slate-400">
+                  {section.title}
+                </h2>
+                <p className="mt-1 text-sm text-slate-600 dark:text-slate-400">
+                  {section.description}
+                </p>
+              </div>
+
+              {section.items.length === 0 ? (
+                <div className="rounded-lg border border-dashed border-slate-200 px-4 py-5 text-sm text-slate-400 dark:border-slate-800">
+                  No active items in this section yet.
+                </div>
+              ) : (
+                <div className="space-y-3">
+                  {section.items.map(item => (
+                    <div
+                      key={item.id}
+                      className="rounded-xl border border-slate-200 bg-white/70 px-4 py-3 dark:border-slate-800 dark:bg-slate-950/40"
+                    >
+                      <div className="flex flex-wrap items-start justify-between gap-2">
+                        <div>
+                          <div className="text-sm font-semibold text-slate-900 dark:text-slate-100">
+                            {item.title}
+                          </div>
+                          <div className="mt-1 text-sm text-slate-600 dark:text-slate-400">
+                            {item.description}
+                          </div>
+                        </div>
+                        <div className="flex flex-wrap gap-2">
+                          <Badge className={capabilityStatusClass(item.status)}>
+                            {item.status === 'active'
+                              ? 'Active'
+                              : 'Configured'}
+                          </Badge>
+                          <Badge variant="outline">{capabilitySourceLabel(item.source)}</Badge>
+                          <Badge variant="outline">
+                            Route: {item.route}
+                          </Badge>
+                        </div>
+                      </div>
+
+                      {item.notes && item.notes.length > 0 ? (
+                        <ul className="mt-3 space-y-1 text-xs text-slate-500 dark:text-slate-400">
+                          {item.notes.map(note => (
+                            <li key={note}>• {note}</li>
+                          ))}
+                        </ul>
+                      ) : null}
+                    </div>
+                  ))}
+                </div>
+              )}
+            </CardContent>
+          </Card>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
 // Main Plugins Page
 // ---------------------------------------------------------------------------
 
@@ -763,11 +950,15 @@ function PluginsComponent() {
 
   return (
     <div className="max-w-5xl mx-auto px-4 py-6">
-      <Tabs defaultValue="skills">
+      <Tabs defaultValue="capabilities">
         <TabsList>
+          <TabsTrigger value="capabilities">Capabilities</TabsTrigger>
           <TabsTrigger value="skills">{t.plugins.skillsTab}</TabsTrigger>
           <TabsTrigger value="mcp">{t.plugins.mcpTab}</TabsTrigger>
         </TabsList>
+        <TabsContent value="capabilities" className="mt-4">
+          <CapabilitiesPage />
+        </TabsContent>
         <TabsContent value="skills" className="mt-4">
           <SkillsPage />
         </TabsContent>

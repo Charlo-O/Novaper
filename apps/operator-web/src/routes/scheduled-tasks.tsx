@@ -7,6 +7,7 @@ import {
   deleteScheduledTask,
   enableScheduledTask,
   disableScheduledTask,
+  runScheduledTaskNow,
   listWorkflows,
   getDevices,
   listDeviceGroups,
@@ -51,6 +52,7 @@ import {
   Trash2,
   Loader2,
   Clock,
+  Play,
   CheckCircle,
   XCircle,
   AlertTriangle,
@@ -102,12 +104,21 @@ function ScheduledTasksComponent() {
   const [deviceSelectionMode, setDeviceSelectionMode] =
     useState<DeviceSelectionMode>('devices');
   const [saving, setSaving] = useState(false);
+  const [runningTaskId, setRunningTaskId] = useState<string | null>(null);
   const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
   const [taskToDelete, setTaskToDelete] = useState<string | null>(null);
 
   // Load data on mount
   useEffect(() => {
     loadData();
+  }, []);
+
+  useEffect(() => {
+    const timer = window.setInterval(() => {
+      void loadData();
+    }, 30000);
+
+    return () => window.clearInterval(timer);
   }, []);
 
   const loadData = async () => {
@@ -211,6 +222,18 @@ function ScheduledTasksComponent() {
       loadData();
     } catch (error) {
       console.error('Failed to toggle task:', error);
+    }
+  };
+
+  const handleRunNow = async (task: ScheduledTaskResponse) => {
+    try {
+      setRunningTaskId(task.id);
+      await runScheduledTaskNow(task.id);
+      await loadData();
+    } catch (error) {
+      console.error('Failed to run scheduled task:', error);
+    } finally {
+      setRunningTaskId(null);
     }
   };
 
@@ -404,6 +427,19 @@ function ScheduledTasksComponent() {
 
                   {/* Actions */}
                   <div className="flex gap-2 pt-2">
+                    <Button
+                      variant="secondary"
+                      size="sm"
+                      onClick={() => handleRunNow(task)}
+                      disabled={runningTaskId === task.id}
+                    >
+                      {runningTaskId === task.id ? (
+                        <Loader2 className="w-3 h-3 mr-1 animate-spin" />
+                      ) : (
+                        <Play className="w-3 h-3 mr-1" />
+                      )}
+                      Run now
+                    </Button>
                     <Button
                       variant="outline"
                       size="sm"

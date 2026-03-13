@@ -845,6 +845,21 @@ function mapStoredDevice(device: StoredDevice): Device {
   };
 }
 
+function cacheDevices(devices: Device[]) {
+  writeStorage(
+    STORAGE_KEYS.devices,
+    devices.map(device => ({
+      id: device.id,
+      serial: device.serial,
+      model: device.model,
+      connection_type: device.connection_type,
+      display_name: device.display_name,
+      group_id: device.group_id || 'default',
+      is_primary: device.id === primaryDeviceId,
+    }))
+  );
+}
+
 async function ensureDevicesSeeded(): Promise<StoredDevice[]> {
   const stored = readStorage<StoredDevice[]>(STORAGE_KEYS.devices, []);
   const health = await fetchSystemHealth();
@@ -1010,10 +1025,9 @@ function getDeviceSerial(deviceId: string) {
 }
 
 export async function listDevices(): Promise<DeviceListResponse> {
-  const devices = await ensureDevicesSeeded();
-  return {
-    devices: devices.map(mapStoredDevice),
-  };
+  const response = await fetchJson<DeviceListResponse>('/api/devices');
+  cacheDevices(response.devices);
+  return response;
 }
 
 export async function getDevices(): Promise<Device[]> {
@@ -1024,120 +1038,107 @@ export async function getDevices(): Promise<Device[]> {
 export async function connectWifi(
   payload: WiFiConnectRequest
 ): Promise<WiFiConnectResponse> {
-  const deviceId = payload.device_id || primaryDeviceId;
-  await updateStoredDevices(devices =>
-    devices.map(device =>
-      device.id === deviceId ? { ...device, connection_type: 'wifi' } : device
-    )
-  );
-  return {
-    success: true,
-    message: 'Connected over WiFi.',
-    device_id: deviceId,
-  };
+  const response = await fetchJson<WiFiConnectResponse>('/api/devices/connect-wifi', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify(payload),
+  });
+  void listDevices().catch(() => undefined);
+  return response;
 }
 
 export async function disconnectWifi(
   deviceId: string
 ): Promise<WiFiDisconnectResponse> {
-  await updateStoredDevices(devices =>
-    devices.map(device =>
-      device.id === deviceId ? { ...device, connection_type: 'usb' } : device
-    )
+  const response = await fetchJson<WiFiDisconnectResponse>(
+    '/api/devices/disconnect-wifi',
+    {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        device_id: deviceId,
+      }),
+    }
   );
-  return {
-    success: true,
-    message: 'Disconnected WiFi device.',
-  };
+  void listDevices().catch(() => undefined);
+  return response;
 }
 
 export async function connectWifiManual(
   payload: WiFiManualConnectRequest
 ): Promise<WiFiManualConnectResponse> {
-  const id = uniqueId('wifi');
-  await updateStoredDevices(devices => [
-    ...devices,
+  const response = await fetchJson<WiFiManualConnectResponse>(
+    '/api/devices/manual-wifi',
     {
-      id,
-      serial: `${payload.ip}:${payload.port || 5555}`,
-      model: 'Android Device',
-      connection_type: 'wifi',
-      display_name: payload.ip,
-      group_id: 'default',
-    },
-  ]);
-  return {
-    success: true,
-    message: 'Manual WiFi device added.',
-    device_id: id,
-  };
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify(payload),
+    }
+  );
+  void listDevices().catch(() => undefined);
+  return response;
 }
 
 export async function pairWifi(
   payload: WiFiPairRequest
 ): Promise<WiFiPairResponse> {
-  return await connectWifiManual({
-    ip: payload.ip,
-    port: payload.connection_port || 5555,
+  const response = await fetchJson<WiFiPairResponse>('/api/devices/pair-wifi', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify(payload),
   });
+  void listDevices().catch(() => undefined);
+  return response;
 }
 
 export async function discoverRemoteDevices(
   payload: RemoteDeviceDiscoverRequest
 ): Promise<RemoteDeviceDiscoverResponse> {
-  const url = payload.base_url.replace(/\/$/, '');
-  return {
-    success: true,
-    message: 'Remote devices discovered.',
-    devices: [
-      {
-        device_id: 'remote-phone-01',
-        model: 'Remote Android',
-        platform: 'android',
-        status: `via ${url}`,
+  return await fetchJson<RemoteDeviceDiscoverResponse>(
+    '/api/remote-devices/discover',
+    {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
       },
-      {
-        device_id: 'remote-tablet-02',
-        model: 'Remote Tablet',
-        platform: 'android',
-        status: `via ${url}`,
-      },
-    ],
-  };
+      body: JSON.stringify(payload),
+    }
+  );
 }
 
 export async function addRemoteDevice(
   payload: RemoteDeviceAddRequest
 ): Promise<RemoteDeviceAddResponse> {
-  const id = uniqueId('remote');
-  await updateStoredDevices(devices => [
-    ...devices,
-    {
-      id,
-      serial: payload.device_id,
-      model: 'Remote Android',
-      connection_type: 'remote',
-      display_name: payload.device_id,
-      group_id: 'default',
+  const response = await fetchJson<RemoteDeviceAddResponse>('/api/remote-devices', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
     },
-  ]);
-  return {
-    success: true,
-    message: 'Remote device added.',
-    serial: payload.device_id,
-  };
+    body: JSON.stringify(payload),
+  });
+  void listDevices().catch(() => undefined);
+  return response;
 }
 
 export async function removeRemoteDevice(
   serial: string
 ): Promise<RemoteDeviceRemoveResponse> {
-  await updateStoredDevices(devices =>
-    devices.filter(device => device.is_primary || device.serial !== serial)
+  const response = await fetchJson<RemoteDeviceRemoveResponse>(
+    `/api/remote-devices/${encodeURIComponent(serial)}`,
+    {
+      method: 'DELETE',
+    }
   );
-  return {
-    success: true,
-    message: 'Remote device removed.',
-  };
+  void listDevices().catch(() => undefined);
+  return response;
 }
 
 export function sendMessageStream(
@@ -1592,142 +1593,73 @@ export async function checkVersion(): Promise<VersionCheckResponse> {
 }
 
 export async function discoverMdnsDevices(): Promise<MdnsDiscoverResponse> {
-  return {
-    success: true,
-    devices: [
-      {
-        name: 'Android 14',
-        ip: '192.168.1.21',
-        port: 5555,
-        has_pairing: false,
-        service_type: '_adb-tls-connect._tcp',
-      },
-      {
-        name: 'Pixel 8',
-        ip: '192.168.1.38',
-        port: 40341,
-        has_pairing: true,
-        pairing_port: 37017,
-        service_type: '_adb-tls-pairing._tcp',
-      },
-    ],
-  };
+  return await fetchJson<MdnsDiscoverResponse>('/api/mdns/devices');
 }
 
 export async function generateQRPairing(
   timeout: number = 90
 ): Promise<QRPairGenerateResponse> {
-  const sessionId = uniqueId('qr');
-  qrSessions.set(sessionId, {
-    sessionId,
-    createdAt: Date.now(),
-    cancelled: false,
+  return await fetchJson<QRPairGenerateResponse>('/api/qr-pairing', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({ timeout }),
   });
-  return {
-    success: true,
-    qr_payload: `WIFI:T:ADB;S:Novaper Pairing;P:${sessionId};`,
-    session_id: sessionId,
-    expires_at: Date.now() + timeout * 1000,
-    message: 'QR pairing started.',
-  };
 }
 
 export async function getQRPairingStatus(
   sessionId: string
 ): Promise<QRPairStatusResponse> {
-  const session = qrSessions.get(sessionId);
-  if (!session || session.cancelled) {
-    return {
-      session_id: sessionId,
-      status: 'error',
-      message: 'Pairing session not found.',
-      error: 'session_not_found',
-    };
-  }
-
-  const elapsed = Date.now() - session.createdAt;
-  const status =
-    elapsed < 3000 ? 'listening' : elapsed < 6000 ? 'pairing' : 'connected';
-
-  return {
-    session_id: sessionId,
-    status,
-    device_id: status === 'connected' ? primaryDeviceId : undefined,
-    message:
-      status === 'connected' ? 'Device connected.' : 'Waiting for device.',
-  };
+  return await fetchJson<QRPairStatusResponse>(
+    `/api/qr-pairing/${encodeURIComponent(sessionId)}`
+  );
 }
 
 export async function cancelQRPairing(
   sessionId: string
 ): Promise<QRPairCancelResponse> {
-  const session = qrSessions.get(sessionId);
-  if (session) {
-    session.cancelled = true;
-  }
-  return {
-    success: true,
-    message: 'QR pairing cancelled.',
-  };
+  return await fetchJson<QRPairCancelResponse>(
+    `/api/qr-pairing/${encodeURIComponent(sessionId)}/cancel`,
+    {
+      method: 'POST',
+    }
+  );
 }
 
 export async function listWorkflows(): Promise<WorkflowListResponse> {
-  return {
-    workflows: readStoredWorkflows(),
-  };
+  return fetchJson<WorkflowListResponse>('/api/workflows');
 }
 
 export async function getWorkflow(uuid: string): Promise<Workflow> {
-  const workflow = readStoredWorkflows().find(item => item.uuid === uuid);
-  if (!workflow) {
-    throw new Error('Workflow not found.');
-  }
-  return workflow;
+  return fetchJson<Workflow>(`/api/workflows/${encodeURIComponent(uuid)}`);
 }
 
 export async function createWorkflow(
   request: WorkflowCreateRequest
 ): Promise<Workflow> {
-  const workflows = readStoredWorkflows();
-  const workflow: Workflow = {
-    uuid: uniqueId('workflow'),
-    name: request.name,
-    text: request.text,
-  };
-  writeStoredWorkflows([workflow, ...workflows]);
-  return workflow;
+  return fetchJson<Workflow>('/api/workflows', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(request),
+  });
 }
 
 export async function updateWorkflow(
   uuid: string,
   request: WorkflowUpdateRequest
 ): Promise<Workflow> {
-  let updatedWorkflow: Workflow | null = null;
-  const workflows = readStoredWorkflows().map(workflow => {
-    if (workflow.uuid !== uuid) {
-      return workflow;
-    }
-    updatedWorkflow = {
-      ...workflow,
-      name: request.name,
-      text: request.text,
-    };
-    return updatedWorkflow;
+  return fetchJson<Workflow>(`/api/workflows/${encodeURIComponent(uuid)}`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(request),
   });
-
-  if (!updatedWorkflow) {
-    throw new Error('Workflow not found.');
-  }
-
-  writeStoredWorkflows(workflows);
-  return updatedWorkflow;
 }
 
 export async function deleteWorkflow(uuid: string): Promise<void> {
-  const workflows = readStoredWorkflows().filter(
-    workflow => workflow.uuid !== uuid
-  );
-  writeStoredWorkflows(workflows);
+  await fetchJson(`/api/workflows/${encodeURIComponent(uuid)}`, {
+    method: 'DELETE',
+  });
 }
 
 export async function abortLayeredAgentChat(_sessionId: string): Promise<{
@@ -2133,82 +2065,45 @@ export async function clearHistory(_serialno?: string): Promise<void> {
 }
 
 export async function listScheduledTasks(): Promise<ScheduledTaskListResponse> {
-  return {
-    tasks: readStoredTasks(),
-  };
+  return fetchJson<ScheduledTaskListResponse>('/api/scheduled-tasks');
 }
 
 export async function createScheduledTask(
   data: ScheduledTaskCreate
 ): Promise<ScheduledTaskResponse> {
-  const task: ScheduledTaskResponse = {
-    id: uniqueId('task'),
-    name: data.name,
-    workflow_uuid: data.workflow_uuid,
-    device_serialnos: data.device_serialnos || [],
-    device_group_id: data.device_group_id || null,
-    cron_expression: data.cron_expression,
-    enabled: data.enabled ?? true,
-    created_at: nowIso(),
-    updated_at: nowIso(),
-    last_run_time: null,
-    last_run_success: null,
-    last_run_status: null,
-    last_run_success_count: null,
-    last_run_total_count: null,
-    last_run_message: null,
-    next_run_time: null,
-  };
-  const tasks = readStoredTasks();
-  writeStoredTasks([task, ...tasks]);
-  return task;
+  return fetchJson<ScheduledTaskResponse>('/api/scheduled-tasks', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(data),
+  });
 }
 
 export async function getScheduledTask(
   taskId: string
 ): Promise<ScheduledTaskResponse> {
-  const task = readStoredTasks().find(item => item.id === taskId);
-  if (!task) {
-    throw new Error('Scheduled task not found.');
-  }
-  return task;
+  return fetchJson<ScheduledTaskResponse>(
+    `/api/scheduled-tasks/${encodeURIComponent(taskId)}`
+  );
 }
 
 export async function updateScheduledTask(
   taskId: string,
   data: ScheduledTaskUpdate
 ): Promise<ScheduledTaskResponse> {
-  let updatedTask: ScheduledTaskResponse | null = null;
-  const tasks = readStoredTasks().map(task => {
-    if (task.id !== taskId) {
-      return task;
+  return fetchJson<ScheduledTaskResponse>(
+    `/api/scheduled-tasks/${encodeURIComponent(taskId)}`,
+    {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(data),
     }
-    updatedTask = {
-      ...task,
-      ...data,
-      device_serialnos:
-        data.device_serialnos === undefined
-          ? task.device_serialnos
-          : data.device_serialnos || [],
-      device_group_id:
-        data.device_group_id === undefined
-          ? task.device_group_id || null
-          : data.device_group_id,
-      updated_at: nowIso(),
-    };
-    return updatedTask;
-  });
-
-  if (!updatedTask) {
-    throw new Error('Scheduled task not found.');
-  }
-
-  writeStoredTasks(tasks);
-  return updatedTask;
+  );
 }
 
 export async function deleteScheduledTask(taskId: string): Promise<void> {
-  writeStoredTasks(readStoredTasks().filter(task => task.id !== taskId));
+  await fetchJson(`/api/scheduled-tasks/${encodeURIComponent(taskId)}`, {
+    method: 'DELETE',
+  });
 }
 
 export async function enableScheduledTask(
@@ -2223,182 +2118,121 @@ export async function disableScheduledTask(
   return await updateScheduledTask(taskId, { enabled: false });
 }
 
+export async function runScheduledTaskNow(taskId: string): Promise<{
+  ok: boolean;
+  taskId: string;
+}> {
+  return fetchJson<{ ok: boolean; taskId: string }>(
+    `/api/scheduled-tasks/${encodeURIComponent(taskId)}/run`,
+    {
+      method: 'POST',
+    }
+  );
+}
+
 export async function updateDeviceName(
   serial: string,
   displayName: string | null
 ): Promise<DeviceNameResponse> {
-  await updateStoredDevices(devices =>
-    devices.map(device =>
-      device.serial === serial
-        ? { ...device, display_name: displayName }
-        : device
-    )
+  const response = await fetchJson<DeviceNameResponse>(
+    `/api/devices/${encodeURIComponent(serial)}/name`,
+    {
+      method: 'PUT',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        display_name: displayName,
+      }),
+    }
   );
-  return {
-    success: true,
-    serial,
-    display_name: displayName,
-  };
+  void listDevices().catch(() => undefined);
+  return response;
 }
 
 export async function getDeviceName(
   serial: string
 ): Promise<DeviceNameResponse> {
-  const device = (await ensureDevicesSeeded()).find(item => item.serial === serial);
-  return {
-    success: true,
-    serial,
-    display_name: device?.display_name || null,
-  };
+  return await fetchJson<DeviceNameResponse>(
+    `/api/devices/${encodeURIComponent(serial)}/name`
+  );
 }
 
 export async function listDeviceGroups(): Promise<DeviceGroupListResponse> {
-  const groups = readStoredGroups();
-  const devices = await ensureDevicesSeeded();
-  return {
-    groups: groups
-      .slice()
-      .sort((left, right) => left.order - right.order)
-      .map(group => ({
-        ...group,
-        device_count: devices.filter(
-          device => (device.group_id || 'default') === group.id
-        ).length,
-      })),
-  };
+  return await fetchJson<DeviceGroupListResponse>('/api/device-groups');
 }
 
 export async function createDeviceGroup(name: string): Promise<DeviceGroup> {
-  const groups = readStoredGroups();
-  const group = {
-    id: uniqueId('group'),
-    name,
-    order: groups.length,
-    created_at: nowIso(),
-    updated_at: nowIso(),
-    is_default: false,
-  };
-  writeStoredGroups([...groups, group]);
-  return {
-    ...group,
-    device_count: 0,
-  };
+  return await fetchJson<DeviceGroup>('/api/device-groups', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({ name }),
+  });
 }
 
 export async function updateDeviceGroup(
   groupId: string,
   name: string
 ): Promise<DeviceGroup> {
-  let updated: DeviceGroup | null = null;
-  const groups = readStoredGroups().map(group => {
-    if (group.id !== groupId) {
-      return group;
+  return await fetchJson<DeviceGroup>(
+    `/api/device-groups/${encodeURIComponent(groupId)}`,
+    {
+      method: 'PUT',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({ name }),
     }
-    updated = {
-      ...group,
-      name,
-      updated_at: nowIso(),
-      device_count: 0,
-    };
-    return updated;
-  });
-
-  if (!updated) {
-    throw new Error('Device group not found.');
-  }
-
-  writeStoredGroups(
-    groups.map(group => ({
-      id: group.id,
-      name: group.name,
-      order: group.order,
-      created_at: group.created_at,
-      updated_at: group.updated_at,
-      is_default: group.is_default,
-    }))
   );
-  return updated;
 }
 
 export async function deleteDeviceGroup(
   groupId: string
 ): Promise<DeviceGroupOperationResponse> {
-  const groups = readStoredGroups();
-  const target = groups.find(group => group.id === groupId);
-  if (!target) {
-    return {
-      success: false,
-      message: 'Device group not found.',
-      error: 'not_found',
-    };
-  }
-  if (target.is_default) {
-    return {
-      success: false,
-      message: 'Default group cannot be deleted.',
-      error: 'default_group',
-    };
-  }
-
-  writeStoredGroups(groups.filter(group => group.id !== groupId));
-  await updateStoredDevices(devices =>
-    devices.map(device =>
-      device.group_id === groupId ? { ...device, group_id: 'default' } : device
-    )
+  return await fetchJson<DeviceGroupOperationResponse>(
+    `/api/device-groups/${encodeURIComponent(groupId)}`,
+    {
+      method: 'DELETE',
+    }
   );
-
-  return {
-    success: true,
-    message: 'Device group deleted.',
-  };
 }
 
 export async function reorderDeviceGroups(
   groupIds: string[]
 ): Promise<DeviceGroupOperationResponse> {
-  const groupsById = new Map(readStoredGroups().map(group => [group.id, group]));
-  const reordered = groupIds
-    .map((groupId, index) => {
-      const group = groupsById.get(groupId);
-      if (!group) {
-        return null;
-      }
-      return {
-        ...group,
-        order: index,
-        updated_at: nowIso(),
-      };
-    })
-    .filter(Boolean) as Array<{
-    id: string;
-    name: string;
-    order: number;
-    created_at: string;
-    updated_at: string;
-    is_default: boolean;
-  }>;
-
-  writeStoredGroups(reordered);
-  return {
-    success: true,
-    message: 'Device groups reordered.',
-  };
+  return await fetchJson<DeviceGroupOperationResponse>(
+    '/api/device-groups/reorder',
+    {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({ group_ids: groupIds }),
+    }
+  );
 }
 
 export async function assignDeviceToGroup(
   serial: string,
   groupId: string
 ): Promise<DeviceGroupOperationResponse> {
-  await updateStoredDevices(devices =>
-    devices.map(device =>
-      device.serial === serial ? { ...device, group_id: groupId } : device
-    )
+  const response = await fetchJson<DeviceGroupOperationResponse>(
+    '/api/device-groups/assign',
+    {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        serial,
+        group_id: groupId,
+      }),
+    }
   );
-
-  return {
-    success: true,
-    message: 'Device moved to group.',
-  };
+  void listDevices().catch(() => undefined);
+  return response;
 }
 
 // ---------------------------------------------------------------------------
@@ -2568,4 +2402,42 @@ export async function updateMcpServer(
 
 export async function deleteMcpServer(id: string): Promise<void> {
   await fetchJson(`/api/plugins/mcp-servers/${id}`, { method: 'DELETE' });
+}
+
+// Runtime capabilities
+
+export type CapabilitySource = 'builtin' | 'skill' | 'mcp';
+export type CapabilityStatus = 'active' | 'configured';
+export type CapabilityRoute = 'desktop' | 'cli' | 'planner' | 'shared';
+
+export interface CapabilityItem {
+  id: string;
+  title: string;
+  description: string;
+  source: CapabilitySource;
+  status: CapabilityStatus;
+  route: CapabilityRoute;
+  notes?: string[];
+}
+
+export interface CapabilitySection {
+  id: string;
+  title: string;
+  description: string;
+  items: CapabilityItem[];
+}
+
+export interface CapabilitySnapshot {
+  generatedAt: string;
+  summary: {
+    builtInCount: number;
+    activeSkillCount: number;
+    enabledMcpCount: number;
+    routes: Array<'desktop' | 'cli' | 'planner'>;
+  };
+  sections: CapabilitySection[];
+}
+
+export async function getSystemCapabilities(): Promise<CapabilitySnapshot> {
+  return fetchJson<CapabilitySnapshot>('/api/system/capabilities');
 }

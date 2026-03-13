@@ -30,7 +30,7 @@ export interface WindowInfo {
  */
 export async function planTasks(
   instruction: string,
-  context: { windows: WindowInfo[]; memory: string },
+  context: { windows: WindowInfo[]; memory: string; capabilities?: string },
   client: ResponsesClient,
   model: string,
 ): Promise<TaskPlan> {
@@ -45,6 +45,7 @@ Current desktop windows:
 ${windowsList || "(no windows detected)"}
 
 ${context.memory ? `Relevant memory context:\n${context.memory}\n` : ""}
+${context.capabilities ? `Runtime capabilities:\n${context.capabilities}\n` : ""}
 
 User instruction: ${instruction}
 
