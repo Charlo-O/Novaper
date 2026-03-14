@@ -853,6 +853,7 @@ function Get-KeyMap {
     "SHIFT" = 0x10
     "ALT" = 0x12
     "ENTER" = 0x0D
+    "RETURN" = 0x0D
     "TAB" = 0x09
     "ESC" = 0x1B
     "ESCAPE" = 0x1B

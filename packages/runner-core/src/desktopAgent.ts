@@ -63,6 +63,29 @@ interface VisualObservation {
   input: ResponseInputItem;
 }
 
+/**
+ * Lightweight screenshot hash: samples evenly-spaced bytes from the base64
+ * string to produce a short fingerprint. Two screenshots with the same hash
+ * are visually identical (within the sampling resolution).
+ */
+function screenshotHash(base64Image: string, samples = 64): string {
+  const len = base64Image.length;
+  if (len === 0) return "";
+  const step = Math.max(1, Math.floor(len / samples));
+  let hash = "";
+  for (let i = 0; i < len; i += step) {
+    hash += base64Image[i];
+  }
+  return hash;
+}
+
+const STALL_THRESHOLD = 3;
+
+const STALL_RECOVERY_PROMPT =
+  "No visual progress detected for multiple turns — your recent actions are not producing any change on screen. " +
+  "Do NOT repeat the same approach. Try a completely different strategy: use a different tool, click different coordinates, or take a different workflow path. " +
+  "If you are blocked by a CAPTCHA, verification code, or login wall that you cannot solve, skip it and try an alternative path to complete the task.";
+
 function extractOutputText(response: { output_text?: string; output?: unknown[] }) {
   if (typeof response.output_text === "string" && response.output_text.trim()) {
     return response.output_text.trim();
@@ -117,7 +140,8 @@ async function saveScreenshot(artifactDir: string, screenshotBaseUrl: string, ba
 async function captureVisualObservation(
   context: Pick<DriveDesktopAgentContext, "sidecar" | "artifactDir" | "screenshotBaseUrl" | "onEvent" | "userContent">,
   label: string,
-): Promise<VisualObservation> {
+  stallDetected = false,
+): Promise<VisualObservation & { hash: string }> {
   const screenshot = await context.sidecar.captureScreenshot();
   const saved = await saveScreenshot(context.artifactDir, context.screenshotBaseUrl, screenshot.imageBase64, label);
   await context.onEvent({
@@ -131,20 +155,28 @@ async function captureVisualObservation(
     },
   });
 
+  const lines = [
+    "[Desktop Observation]",
+    `Current instruction: ${context.userContent}`,
+    `Screen size: ${screenshot.width}x${screenshot.height}. Coordinates must use absolute pixels on this screenshot.`,
+    "Use desktop_actions for visual fallback when UI Automation cannot identify the target reliably.",
+    "If the requested action has already been completed, do not repeat the same desktop_actions call. Summarize completion and stop.",
+  ];
+
+  if (stallDetected) {
+    lines.push("");
+    lines.push(`[STALL WARNING] ${STALL_RECOVERY_PROMPT}`);
+  }
+
   return {
+    hash: screenshotHash(screenshot.imageBase64),
     latestScreenshotUrl: saved.url,
     input: {
       role: "user",
       content: [
         {
           type: "input_text",
-          text: [
-            "[Desktop Observation]",
-            `Current instruction: ${context.userContent}`,
-            `Screen size: ${screenshot.width}x${screenshot.height}. Coordinates must use absolute pixels on this screenshot.`,
-            "Use desktop_actions for visual fallback when UI Automation cannot identify the target reliably.",
-            "If the requested action has already been completed, do not repeat the same desktop_actions call. Summarize completion and stop.",
-          ].join("\n"),
+          text: lines.join("\n"),
         },
         {
           type: "input_image",
@@ -181,10 +213,16 @@ export async function driveDesktopAgent(context: DriveDesktopAgentContext): Prom
   const registry = new Map(toolDefinitions.map((tool) => [tool.name, tool]));
 
   let latestScreenshotUrl: string | undefined;
-  let lastExecutedToolSignature: { name: string; signature: string } | undefined;
   let executedToolCallCount = 0;
   let remindedToolUse = false;
   const collectedToolCalls: DesktopAgentToolCall[] = [];
+
+  // Broader duplicate detection: track last 3 tool call signatures
+  const recentToolSignatures: Array<{ name: string; signature: string }> = [];
+
+  // Visual stall detection
+  let lastScreenshotHash: string | undefined;
+  let consecutiveStallCount = 0;
 
   // Build memory-enhanced developer prompt
   let enhancedPrompt = context.developerPrompt;
@@ -214,6 +252,7 @@ export async function driveDesktopAgent(context: DriveDesktopAgentContext): Prom
   if (visualGroundingEnabled) {
     const observation = await captureVisualObservation(context, "observe-initial");
     latestScreenshotUrl = observation.latestScreenshotUrl;
+    lastScreenshotHash = observation.hash;
     initialInput.push(observation.input);
   } else {
     initialInput.push({ role: "user", content: context.userContent });
@@ -306,26 +345,39 @@ export async function driveDesktopAgent(context: DriveDesktopAgentContext): Prom
       });
 
       const signature = JSON.stringify(args);
+      const currentSig = { name: call.name, signature };
+
+      // Broader duplicate detection: skip if same tool+args appears 2+ times in last 3 calls
+      const duplicateCount = recentToolSignatures.filter(
+        (s) => s.name === currentSig.name && s.signature === currentSig.signature,
+      ).length;
+
       const result =
-        call.name === "desktop_actions" &&
-        lastExecutedToolSignature?.name === call.name &&
-        lastExecutedToolSignature.signature === signature
+        duplicateCount >= 2
           ? {
               skipped: true,
               reason:
-                "The same desktop_actions request was already executed on the previous turn. Review the latest screenshot and either finish or choose a different action.",
+                `The same ${call.name} call was already executed ${duplicateCount} times in recent turns. ` +
+                "This approach is not working. Try a completely different action, tool, or workflow path.",
             }
           : await tool.execute(args).catch((error) => serializeToolError(error));
 
       executedToolCallCount += 1;
 
-      lastExecutedToolSignature =
-        call.name === "desktop_actions"
-          ? {
-              name: call.name,
-              signature,
-            }
-          : undefined;
+      // Track stall for non-visual mode: duplicate skips count as stalls
+      if (!visualGroundingEnabled) {
+        if (duplicateCount >= 2) {
+          consecutiveStallCount += 1;
+        } else {
+          consecutiveStallCount = 0;
+        }
+      }
+
+      // Maintain a sliding window of last 3 tool signatures
+      recentToolSignatures.push(currentSig);
+      if (recentToolSignatures.length > 3) {
+        recentToolSignatures.shift();
+      }
       await context.onEvent({
         type: "tool_result",
         level: result && typeof result === "object" && "ok" in result && result.ok === false ? "warning" : "info",
@@ -391,9 +443,38 @@ export async function driveDesktopAgent(context: DriveDesktopAgentContext): Prom
     }
 
     if (visualGroundingEnabled) {
-      const observation = await captureVisualObservation(context, `observe-turn-${turn}`);
+      const stallDetected = consecutiveStallCount >= STALL_THRESHOLD;
+      const observation = await captureVisualObservation(context, `observe-turn-${turn}`, stallDetected);
       latestScreenshotUrl = observation.latestScreenshotUrl;
+
+      // Visual stall detection: compare screenshot hashes
+      if (lastScreenshotHash && observation.hash === lastScreenshotHash) {
+        consecutiveStallCount += 1;
+      } else {
+        consecutiveStallCount = 0;
+      }
+      lastScreenshotHash = observation.hash;
+
+      if (stallDetected) {
+        await context.onEvent({
+          type: "log",
+          level: "warning",
+          message: `Stall detected: screen unchanged for ${consecutiveStallCount} consecutive turns. Injecting recovery prompt.`,
+        });
+      }
+
       nextInput.push(observation.input);
+    } else if (consecutiveStallCount >= STALL_THRESHOLD) {
+      // Even without visual grounding, inject recovery prompt after repeated stalls
+      nextInput.push({
+        role: "user",
+        content: STALL_RECOVERY_PROMPT,
+      });
+      await context.onEvent({
+        type: "log",
+        level: "warning",
+        message: `Stall detected: same tool calls repeated for ${consecutiveStallCount} turns. Injecting recovery prompt.`,
+      });
     }
 
     response = await context.client.createResponse({

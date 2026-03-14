@@ -15,5 +15,80 @@
   ],
   "preferredInteraction": "vision",
   "complexity": "complex",
-  "memories": []
+  "memories": [
+    {
+      "id": "7d2b082d-0b9d-4205-a89d-09f189f1550b",
+      "createdAt": "2026-03-11T05:34:07.589Z",
+      "updatedAt": "2026-03-11T05:34:07.589Z",
+      "category": "app_knowledge",
+      "appContext": "WeChat",
+      "scope": "app",
+      "content": "WeChat was already running in the background and could be brought forward successfully by focusing the existing Weixin window instead of launching a new instance.",
+      "accessCount": 0,
+      "lastAccessedAt": "2026-03-11T05:34:07.589Z",
+      "tags": [
+        "WeChat",
+        "Weixin",
+        "window management",
+        "focus existing window"
+      ],
+      "confidence": 0.92
+    },
+    {
+      "id": "1c6961cd-9e4a-4fe2-bb1d-6766ce3407c5",
+      "createdAt": "2026-03-11T05:34:07.589Z",
+      "updatedAt": "2026-03-11T05:34:07.589Z",
+      "category": "procedure",
+      "appContext": "WeChat",
+      "scope": "app",
+      "content": "To open WeChat, first check existing windows for titles like '微信' or chat-record windows, then focus the Weixin window if present.",
+      "accessCount": 0,
+      "lastAccessedAt": "2026-03-11T05:34:07.589Z",
+      "tags": [
+        "WeChat",
+        "open app",
+        "list windows",
+        "focus window"
+      ],
+      "confidence": 0.9
+    },
+    {
+      "id": "88e460dd-bce1-4a15-9489-61139719d797",
+      "createdAt": "2026-03-11T07:45:12.204Z",
+      "updatedAt": "2026-03-11T07:45:12.204Z",
+      "category": "app_knowledge",
+      "appContext": "WeChat",
+      "scope": "app",
+      "content": "On this Windows system, WeChat is running as process name 'Weixin' and can be brought to the foreground by focusing an existing window titled '微信' instead of launching from the default Program Files paths.",
+      "accessCount": 0,
+      "lastAccessedAt": "2026-03-11T07:45:12.204Z",
+      "tags": [
+        "WeChat",
+        "Weixin",
+        "window focus",
+        "existing instance",
+        "Windows"
+      ],
+      "confidence": 0.93
+    },
+    {
+      "id": "81e933af-8aa1-4c90-9742-abb032257470",
+      "createdAt": "2026-03-11T07:45:12.204Z",
+      "updatedAt": "2026-03-11T07:45:12.204Z",
+      "category": "procedure",
+      "appContext": "WeChat",
+      "scope": "app",
+      "content": "To open WeChat quickly, first check existing windows for titles like '微信' or chat windows from process 'Weixin'; if found, focus that window rather than searching for WeChat.exe in common install paths.",
+      "accessCount": 0,
+      "lastAccessedAt": "2026-03-11T07:45:12.204Z",
+      "tags": [
+        "WeChat",
+        "open app",
+        "focus window",
+        "procedure",
+        "Windows"
+      ],
+      "confidence": 0.95
+    }
+  ]
 }

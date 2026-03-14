@@ -358,7 +358,9 @@ function buildLiveDeveloperPrompt(options?: {
       "Only say a chat message was sent when a post-action screenshot shows the input box cleared or the message bubble appearing in the conversation.",
       "Do only what the current user instruction requires. When the instruction is complete, stop and summarize briefly.",
       "If the instruction is ambiguous, ask a short clarification instead of guessing.",
-      "If you hit UAC, a security boundary, CAPTCHA, or a blocked state, stop and explain the blocker.",
+      "If you hit a CAPTCHA, verification code, or login wall that you cannot solve, skip it and try an alternative path to complete the task. Only stop and explain if there is truly no alternative.",
+      "If you hit UAC or a system security prompt, stop and explain the blocker.",
+      "When an action produces no visible change after execution, do not repeat it. Try a different tool, different coordinates, or a different workflow.",
       "When a desktop screenshot is attached, treat it as the current visual state. Use absolute pixel coordinates from that screenshot for desktop_actions.",
     ].join("\n"),
   ];
