@@ -64,6 +64,16 @@ export class LiveSessionStore {
       try {
         const raw = await fs.readFile(sessionPath, "utf8");
         const session: LiveSession = JSON.parse(raw);
+
+        // Recover sessions that were mid-execution when the server stopped.
+        // These will never resume, so reset them to idle.
+        if (session.status === "acting" || session.status === "observing") {
+          session.status = "idle";
+          session.stopRequested = false;
+          session.executionLock = false;
+          await fs.writeFile(sessionPath, JSON.stringify(session, null, 2));
+        }
+
         this.sessions.set(session.id, session);
 
         // Restore events from events.jsonl
