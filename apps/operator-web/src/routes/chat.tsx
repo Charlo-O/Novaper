@@ -14,7 +14,6 @@ import {
   type ConfigSaveRequest,
   type AuthStatusResponse,
 } from '../api';
-import { DeviceSidebar } from '../components/DeviceSidebar';
 import { DevicePanel } from '../components/DevicePanel';
 import { ChatKitPanel } from '../components/ChatKitPanel';
 import { GroupManageDialog } from '../components/GroupManageDialog';
@@ -45,7 +44,6 @@ import {
   Server,
   ExternalLink,
   Brain,
-  Layers,
   Sparkles,
   Cpu,
   Info,
@@ -1303,82 +1301,10 @@ function ChatComponent() {
         </DialogContent>
       </Dialog>
 
-      {/* Sidebar */}
-      <DeviceSidebar
-        devices={devices}
-        currentDeviceId={currentDeviceId}
-        onSelectDevice={setCurrentDeviceId}
-        onOpenConfig={() => setShowConfig(true)}
-        onOpenGroupManager={() => setShowGroupManager(true)}
-        onConnectWifi={handleConnectWifi}
-        onDisconnectWifi={handleDisconnectWifi}
-        onRefreshDevices={loadDevices}
-        showToast={showToast}
-      />
-
       {/* Main content */}
       <div className="flex-1 flex flex-col min-h-0 relative">
-        {/* Mode Toggle - Floating Capsule */}
-        <div className="absolute top-4 left-1/2 -translate-x-1/2 z-20">
-          <div className="flex items-center gap-0.5 bg-white/95 dark:bg-slate-800/95 backdrop-blur-sm rounded-full p-1 shadow-lg border border-slate-200 dark:border-slate-700">
-            <Tooltip>
-              <TooltipTrigger asChild>
-                <button
-                  onClick={() => setChatMode('classic')}
-                  className={`flex items-center gap-1.5 px-4 py-2 rounded-full text-sm font-medium transition-all ${
-                    chatMode === 'classic'
-                      ? 'bg-slate-900 dark:bg-white text-white dark:text-slate-900 shadow-sm'
-                      : 'text-slate-500 dark:text-slate-400 hover:text-slate-700 dark:hover:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-700'
-                  }`}
-                >
-                  <Sparkles className="w-4 h-4" />
-                  {t.chatkit?.classicMode || '经典模式'}
-                </button>
-              </TooltipTrigger>
-              <TooltipContent side="bottom" sideOffset={8} className="max-w-xs">
-                <div className="space-y-1">
-                  <p className="font-medium">
-                    {t.chatkit?.classicMode || '经典模式'}
-                  </p>
-                  <p className="text-xs opacity-80">
-                    {t.chatkit?.classicModeDesc || '视觉模型直接执行任务'}
-                  </p>
-                </div>
-              </TooltipContent>
-            </Tooltip>
-            <Tooltip>
-              <TooltipTrigger asChild>
-                <button
-                  onClick={() => {
-                    setChatMode('chatkit');
-                  }}
-                  className={`flex items-center gap-1.5 px-4 py-2 rounded-full text-sm font-medium transition-all ${
-                    chatMode === 'chatkit'
-                      ? 'bg-indigo-600 text-white shadow-sm'
-                      : 'text-slate-500 dark:text-slate-400 hover:text-slate-700 dark:hover:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-700'
-                  }`}
-                >
-                  <Layers className="w-4 h-4" />
-                  {t.chatkit?.layeredMode || '分层代理'}
-                </button>
-              </TooltipTrigger>
-              <TooltipContent side="bottom" sideOffset={8} className="max-w-xs">
-                <div className="space-y-1">
-                  <p className="font-medium">
-                    {t.chatkit?.layeredMode || '分层代理'}
-                  </p>
-                  <p className="text-xs opacity-80">
-                    {t.chatkit?.layeredModeDesc ||
-                      '规划层分解任务，执行层独立完成子任务'}
-                  </p>
-                </div>
-              </TooltipContent>
-            </Tooltip>
-          </div>
-        </div>
-
         {/* Content area */}
-        <div className="flex-1 flex items-stretch justify-center min-h-0 px-4 py-4 pt-16">
+        <div className="flex-1 flex items-stretch justify-center min-h-0 px-4 py-4">
           {devices.length === 0 ? (
             <div className="flex-1 flex items-center justify-center bg-slate-50 dark:bg-slate-950">
               <div className="text-center">

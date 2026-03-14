@@ -185,7 +185,6 @@ function RootComponent() {
           <div className="flex-1 overflow-auto">
             <Outlet />
           </div>
-          <Footer />
         </div>
       </div>
       <TanStackRouterDevtools position="bottom-right" />

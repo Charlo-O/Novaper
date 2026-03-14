@@ -7,6 +7,7 @@ import {
   History,
   Clock,
   Puzzle,
+  Settings,
   type LucideIcon,
 } from 'lucide-react';
 import {
@@ -70,6 +71,8 @@ export function NavigationSidebar({ className }: NavigationSidebarProps) {
     },
   ];
 
+  const settingsActive = matchRoute({ to: '/settings' });
+
   return (
     <nav
       className={`w-16 h-full flex flex-col bg-white dark:bg-slate-950 border-r border-slate-200 dark:border-slate-800 ${className || ''}`}
@@ -118,6 +121,27 @@ export function NavigationSidebar({ className }: NavigationSidebarProps) {
             </Tooltip>
           );
         })}
+      </div>
+
+      {/* Settings at bottom */}
+      <div className="mt-auto flex flex-col items-center py-4">
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <Link
+              to="/settings"
+              className={`w-10 h-10 rounded-lg transition-all flex items-center justify-center ${
+                settingsActive
+                  ? 'bg-[#1d9bf0]/10 text-[#1d9bf0] hover:bg-[#1d9bf0]/20'
+                  : 'text-slate-600 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-800'
+              }`}
+            >
+              <Settings className="w-5 h-5" />
+            </Link>
+          </TooltipTrigger>
+          <TooltipContent side="right" sideOffset={8}>
+            {t.navigation.settings || 'Settings'}
+          </TooltipContent>
+        </Tooltip>
       </div>
     </nav>
   );

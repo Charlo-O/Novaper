@@ -644,10 +644,19 @@ export function DevicePanel({
               <Sparkles className="h-5 w-5 text-[#1d9bf0]" />
             </div>
             <div className="group">
-              <div className="flex items-center gap-1">
+              <div className="flex items-center gap-1.5">
                 <h2 className="font-bold text-slate-900 dark:text-slate-100">
                   {deviceName}
                 </h2>
+                <span className="relative flex h-2.5 w-2.5">
+                  <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-green-400 opacity-75" />
+                  <span className="relative inline-flex rounded-full h-2.5 w-2.5 bg-green-500" />
+                </span>
+                {deviceConnectionType && (
+                  <Badge variant="secondary" className="text-[10px] px-1.5 py-0 h-4 uppercase font-medium">
+                    {deviceConnectionType}
+                  </Badge>
+                )}
               </div>
               <p className="text-xs text-slate-500 dark:text-slate-400 font-mono">
                 {deviceId}
