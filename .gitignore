@@ -3,21 +3,9 @@ node_modules/
 .env.local
 .env.*.local
 
-data/auth/*
-!data/auth/.gitkeep
-data/plugins/*
-!data/plugins/.gitkeep
-data/logs/*
-data/live-sessions/*
-!data/live-sessions/.gitkeep
-data/runs/*
-!data/runs/.gitkeep
-data/automation/*
-!data/automation/.gitkeep
-data/devices/*
-!data/devices/.gitkeep
-data/memory/global.json
-data/memory/sessions/
+data/**
+!data/**/
+!data/**/.gitkeep
 
 output/
 external/
