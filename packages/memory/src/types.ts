@@ -12,6 +12,8 @@ export interface MemoryEntry {
   tags: string[];
   sourceSessionId?: string;
   confidence: number; // 0.0-1.0
+  consolidated?: boolean; // marked after LLM consolidation
+  mergedFrom?: string[]; // IDs of entries merged into this one
 }
 
 export interface AppProfile {
@@ -54,6 +56,23 @@ export interface LiveEvent {
   level: string;
   message: string;
   payload?: unknown;
+}
+
+export interface ConsolidationRecord {
+  id: string;
+  sourceIds: string[];
+  insight: string;
+  summary: string;
+  connections: Array<{ fromId: string; toId: string; relationship: string }>;
+  createdAt: string;
+}
+
+export interface ConsolidationResult {
+  mergedCount: number;
+  boostedCount: number;
+  prunedCount: number;
+  insight?: string;
+  consolidationId?: string;
 }
 
 export interface ResponsesClient {

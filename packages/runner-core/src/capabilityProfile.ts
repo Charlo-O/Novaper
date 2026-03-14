@@ -138,6 +138,15 @@ export function buildCapabilitySnapshot(input: {
         ],
       },
       {
+        id: "memory-consolidation",
+        title: "Memory Consolidation",
+        description:
+          "Background service that deduplicates, merges, and discovers patterns across stored memories.",
+        source: "builtin",
+        status: "active",
+        route: "shared",
+      },
+      {
         id: "plugin-management",
         title: "Skills and Integration Registry",
         description:

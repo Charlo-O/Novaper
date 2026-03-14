@@ -1,6 +1,6 @@
 import { promises as fs } from "node:fs";
 import path from "node:path";
-import type { MemoryEntry, AppProfile } from "./types.js";
+import type { MemoryEntry, AppProfile, ConsolidationRecord } from "./types.js";
 
 /** JSON file persistence layer for the memory system */
 export class MemoryStore {
@@ -68,6 +68,25 @@ export class MemoryStore {
       path.join(this.rootDir, "sessions", `${sessionId}.json`),
       entries,
     );
+  }
+
+  // ─── Consolidation Records ──────────────────────────────────────────
+
+  async loadConsolidations(): Promise<ConsolidationRecord[]> {
+    return this.readJson<ConsolidationRecord[]>(
+      path.join(this.rootDir, "consolidations.json"),
+      [],
+    );
+  }
+
+  async saveConsolidations(records: ConsolidationRecord[]): Promise<void> {
+    await this.writeJson(path.join(this.rootDir, "consolidations.json"), records);
+  }
+
+  async appendConsolidation(record: ConsolidationRecord): Promise<void> {
+    const records = await this.loadConsolidations();
+    records.push(record);
+    await this.saveConsolidations(records);
   }
 
   // ─── Generic Helpers ──────────────────────────────────────────────

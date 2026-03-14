@@ -439,6 +439,16 @@ export async function createServer(config: {
   const memoryManager = new MemoryManager(path.join(config.rootDir, "data", "memory"));
   await memoryManager.init();
 
+  // Start background memory consolidation (every 30 minutes)
+  memoryManager.startConsolidationLoop(30 * 60 * 1000, async () => {
+    try {
+      const auth = await authService.getResponsesClient();
+      return { client: auth.client as unknown as import("../../../packages/memory/src/types.js").ResponsesClient, model: config.model };
+    } catch {
+      return null;
+    }
+  });
+
   // Restore persisted data from disk on startup
   await Promise.all([
     store.loadFromDisk(),
@@ -1848,6 +1858,35 @@ export async function createServer(config: {
       confidence: body.confidence ?? 0.8,
     });
     response.status(201).json(entry);
+  });
+
+  // ─── Memory Consolidation API ───────────────────────────────────────
+
+  app.post("/api/memories/consolidate", async (request, response) => {
+    try {
+      let client: import("../../../packages/memory/src/types.js").ResponsesClient | undefined;
+      let model: string | undefined;
+      try {
+        const auth = await authService.getResponsesClient();
+        client = auth.client as unknown as import("../../../packages/memory/src/types.js").ResponsesClient;
+        model = typeof request.body?.model === "string" ? request.body.model : config.model;
+      } catch {
+        // No auth available — will run local-only consolidation
+      }
+      const result = await memoryManager.consolidate(client, model);
+      response.json(result);
+    } catch (error) {
+      response.status(500).json({ error: summarizeError(error) });
+    }
+  });
+
+  app.get("/api/memories/consolidations", async (_request, response) => {
+    try {
+      const records = await memoryManager.getStore().loadConsolidations();
+      response.json(records);
+    } catch (error) {
+      response.status(500).json({ error: summarizeError(error) });
+    }
   });
 
   // ─── Unified History API ─────────────────────────────────────────────

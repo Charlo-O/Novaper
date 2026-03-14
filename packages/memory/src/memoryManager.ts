@@ -1,20 +1,24 @@
-import type { MemoryEntry, WindowInfo, LiveEvent, ResponsesClient } from "./types.js";
+import type { MemoryEntry, WindowInfo, LiveEvent, ResponsesClient, ConsolidationResult } from "./types.js";
 import { MemoryStore } from "./memoryStore.js";
 import { WorkingMemory } from "./workingMemory.js";
 import { LongTermMemory } from "./longTermMemory.js";
 import { AppContextMemory } from "./appContextMemory.js";
+import { MemoryConsolidation } from "./consolidation.js";
 
 /** Unified orchestrator for the three-layer memory system */
 export class MemoryManager {
   private readonly store: MemoryStore;
   private readonly longTerm: LongTermMemory;
   private readonly appContext: AppContextMemory;
+  private readonly consolidation: MemoryConsolidation;
   private readonly workingMemories = new Map<string, WorkingMemory>();
+  private consolidationTimer: ReturnType<typeof setInterval> | null = null;
 
   constructor(dataDir: string) {
     this.store = new MemoryStore(dataDir);
     this.longTerm = new LongTermMemory(this.store);
     this.appContext = new AppContextMemory(this.store);
+    this.consolidation = new MemoryConsolidation(this.store, this.longTerm);
   }
 
   async init(): Promise<void> {
@@ -145,8 +149,53 @@ export class MemoryManager {
     // Cleanup working memory from active map
     this.workingMemories.delete(sessionId);
 
-    // Periodic pruning (run every time, it's cheap)
-    await this.longTerm.pruneStale();
+    // Local consolidation: dedup + boost + prune (cheap, no LLM)
+    await this.consolidation.runLocal();
+  }
+
+  // ─── Consolidation ──────────────────────────────────────────────────
+
+  getConsolidation(): MemoryConsolidation {
+    return this.consolidation;
+  }
+
+  /** Run consolidation: Layer 1 only if no client, full (Layer 1+2) if client provided. */
+  async consolidate(client?: ResponsesClient, model?: string): Promise<ConsolidationResult> {
+    if (client && model) {
+      return this.consolidation.runFull(client, model);
+    }
+    return this.consolidation.runLocal();
+  }
+
+  /** Start a background timer that runs consolidation periodically. */
+  startConsolidationLoop(
+    intervalMs: number,
+    getClient: () => Promise<{ client: ResponsesClient; model: string } | null>,
+  ): void {
+    this.stopConsolidationLoop();
+    this.consolidationTimer = setInterval(async () => {
+      try {
+        const auth = await getClient();
+        if (auth) {
+          await this.consolidation.runFull(auth.client, auth.model);
+        } else {
+          await this.consolidation.runLocal();
+        }
+      } catch {
+        // Background consolidation is best-effort
+      }
+    }, intervalMs);
+    // Allow the Node process to exit even if the timer is running
+    if (this.consolidationTimer && typeof this.consolidationTimer === "object" && "unref" in this.consolidationTimer) {
+      this.consolidationTimer.unref();
+    }
+  }
+
+  stopConsolidationLoop(): void {
+    if (this.consolidationTimer) {
+      clearInterval(this.consolidationTimer);
+      this.consolidationTimer = null;
+    }
   }
 
   // ─── Direct access for API layer ────────────────────────────────────
