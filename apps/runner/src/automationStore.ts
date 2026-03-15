@@ -2,10 +2,36 @@ import { randomUUID } from "node:crypto";
 import { promises as fs } from "node:fs";
 import path from "node:path";
 
+export interface RecordedAction {
+  id: string;
+  seq: number;
+  type: "click" | "dblclick" | "type" | "keypress" | "navigate" | "scroll" | "select" | "hover" | "wait";
+  timestamp: number;
+  target: {
+    selector: string;
+    xpath?: string;
+    text?: string;
+    tag: string;
+    attributes?: Record<string, string>;
+  };
+  value?: string;
+  position?: { x: number; y: number };
+  screenshot_path?: string;
+  description?: string;
+}
+
 export interface WorkflowRecord {
   uuid: string;
   name: string;
   text: string;
+  type: "manual" | "recorded";
+  recorded_actions?: RecordedAction[];
+  recording_url?: string;
+  recording_metadata?: {
+    duration_ms: number;
+    action_count: number;
+    recorded_at: string;
+  };
   created_at: string;
   updated_at: string;
 }
@@ -172,7 +198,7 @@ export class AutomationStore {
       this.readJson<ScheduledTaskRecord>(this.tasksPath),
     ]);
 
-    this.workflows = new Map(workflowEntries.map((entry) => [entry.uuid, entry]));
+    this.workflows = new Map(workflowEntries.map((entry) => [entry.uuid, { ...entry, type: entry.type || "manual" }]));
     this.tasks = new Map(
       taskEntries.map((entry) => {
         const existingNextRun = entry.next_run_time ? new Date(entry.next_run_time) : null;
@@ -210,6 +236,7 @@ export class AutomationStore {
       uuid: input.uuid?.trim() || randomUUID(),
       name: input.name.trim(),
       text: input.text,
+      type: "manual",
       created_at: nowIso(),
       updated_at: nowIso(),
     };
@@ -218,12 +245,42 @@ export class AutomationStore {
     return workflow;
   }
 
-  async updateWorkflow(uuid: string, patch: { name: string; text: string }) {
+  async createRecordedWorkflow(input: {
+    name: string;
+    recording_url: string;
+    recorded_actions: RecordedAction[];
+    duration_ms: number;
+    uuid?: string;
+  }) {
+    const workflow: WorkflowRecord = {
+      uuid: input.uuid?.trim() || randomUUID(),
+      name: input.name.trim(),
+      text: "",
+      type: "recorded",
+      recorded_actions: input.recorded_actions,
+      recording_url: input.recording_url,
+      recording_metadata: {
+        duration_ms: input.duration_ms,
+        action_count: input.recorded_actions.length,
+        recorded_at: nowIso(),
+      },
+      created_at: nowIso(),
+      updated_at: nowIso(),
+    };
+    this.workflows.set(workflow.uuid, workflow);
+    await this.persistWorkflows();
+    return workflow;
+  }
+
+  async updateWorkflow(uuid: string, patch: { name?: string; text?: string; recorded_actions?: RecordedAction[]; recording_url?: string; recording_metadata?: WorkflowRecord["recording_metadata"] }) {
     const workflow = this.requireWorkflow(uuid);
     const updated: WorkflowRecord = {
       ...workflow,
-      name: patch.name.trim(),
-      text: patch.text,
+      ...(patch.name != null && { name: patch.name.trim() }),
+      ...(patch.text != null && { text: patch.text }),
+      ...(patch.recorded_actions != null && { recorded_actions: patch.recorded_actions }),
+      ...(patch.recording_url != null && { recording_url: patch.recording_url }),
+      ...(patch.recording_metadata != null && { recording_metadata: patch.recording_metadata }),
       updated_at: nowIso(),
     };
     this.workflows.set(uuid, updated);

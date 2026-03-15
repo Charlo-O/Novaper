@@ -322,10 +322,36 @@ export interface QRPairCancelResponse {
   message: string;
 }
 
+export interface RecordedAction {
+  id: string;
+  seq: number;
+  type: "click" | "dblclick" | "type" | "keypress" | "navigate" | "scroll" | "select" | "hover" | "wait";
+  timestamp: number;
+  target: {
+    selector: string;
+    xpath?: string;
+    text?: string;
+    tag: string;
+    attributes?: Record<string, string>;
+  };
+  value?: string;
+  position?: { x: number; y: number };
+  screenshot_path?: string;
+  description?: string;
+}
+
 export interface Workflow {
   uuid: string;
   name: string;
   text: string;
+  type?: "manual" | "recorded";
+  recorded_actions?: RecordedAction[];
+  recording_url?: string;
+  recording_metadata?: {
+    duration_ms: number;
+    action_count: number;
+    recorded_at: string;
+  };
 }
 
 export interface WorkflowListResponse {
@@ -340,6 +366,22 @@ export interface WorkflowCreateRequest {
 export interface WorkflowUpdateRequest {
   name: string;
   text: string;
+}
+
+export interface RecordedWorkflowCreateRequest {
+  name: string;
+  recording_url: string;
+  recorded_actions: RecordedAction[];
+  duration_ms: number;
+}
+
+export interface WorkflowReplayStatus {
+  status: "idle" | "running" | "completed" | "failed" | "stopped";
+  currentAction: number;
+  totalActions: number;
+  duration_ms: number;
+  lastScreenshot?: string;
+  errors: Array<{ actionSeq: number; error: string }>;
 }
 
 export interface MessageRecordResponse {
@@ -1660,6 +1702,40 @@ export async function deleteWorkflow(uuid: string): Promise<void> {
   await fetchJson(`/api/workflows/${encodeURIComponent(uuid)}`, {
     method: 'DELETE',
   });
+}
+
+export async function createRecordedWorkflow(
+  request: RecordedWorkflowCreateRequest
+): Promise<Workflow> {
+  return fetchJson<Workflow>('/api/workflows/recorded', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(request),
+  });
+}
+
+export async function replayWorkflow(uuid: string): Promise<{ started: boolean; uuid: string }> {
+  return fetchJson(`/api/workflows/${encodeURIComponent(uuid)}/replay`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: '{}',
+  });
+}
+
+export async function getReplayStatus(uuid: string): Promise<WorkflowReplayStatus> {
+  return fetchJson<WorkflowReplayStatus>(
+    `/api/workflows/${encodeURIComponent(uuid)}/replay-status`
+  );
+}
+
+export async function stopReplay(uuid: string): Promise<{ stopped: boolean }> {
+  return fetchJson(`/api/workflows/${encodeURIComponent(uuid)}/replay/stop`, {
+    method: 'POST',
+  });
+}
+
+export async function getWorkflowScreenshots(uuid: string): Promise<{ screenshots: string[] }> {
+  return fetchJson(`/api/workflows/${encodeURIComponent(uuid)}/screenshots`);
 }
 
 export async function abortLayeredAgentChat(_sessionId: string): Promise<{

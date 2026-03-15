@@ -33,6 +33,8 @@ import { MemoryManager } from "../../../packages/memory/src/memoryManager.js";
 import { FrameStreamer } from "../../../packages/runner-core/src/videoObserver.js";
 import { BrowserSessionManager } from "../../../packages/browser-runtime/src/browserSessionManager.js";
 import { AutomationStore } from "./automationStore.js";
+import type { RecordedAction } from "./automationStore.js";
+import { replayWorkflow, getReplayProgress, stopReplay as stopReplayEngine } from "../../../packages/runner-core/src/workflowReplayer.js";
 import { DeviceStore, type StoredDeviceRecord } from "./deviceStore.js";
 import { PluginStore } from "./pluginStore.js";
 import type { ResponsesClient } from "../../../packages/runner-core/src/responsesClient.js";
@@ -530,57 +532,83 @@ export async function createServer(config: {
 
     void (async () => {
       try {
-        const authStatus = await authService.getStatus();
-        const authProvider = authStatus.defaultProvider;
-        if (!authProvider) {
-          throw new Error("No auth provider is configured for automation runs.");
-        }
+        // Recorded workflow: use replay engine directly
+        if (workflow.type === "recorded" && workflow.recorded_actions?.length) {
+          const sessionId = `scheduled-${workflow.uuid}-${Date.now()}`;
+          await browserSessionManager.open(sessionId, { url: workflow.recording_url });
 
-        const session = await liveStore.createSession(config.model, authProvider as AuthProvider);
-        await liveStore.appendEvent(session.id, {
-          type: "status",
-          level: "info",
-          message: `${trigger === "manual" ? "Manual" : "Scheduled"} workflow run started.`,
-          payload: {
-            scheduledTaskId: task.id,
+          const result = await replayWorkflow({
             workflowUuid: workflow.uuid,
             workflowName: workflow.name,
-          },
-        });
+            recordingUrl: workflow.recording_url || "",
+            actions: workflow.recorded_actions,
+            browserSession: browserSessionManager,
+            sessionId,
+            artifactDir: path.join(config.rootDir, "data"),
+          });
 
-        const instruction = [
-          `Workflow: ${workflow.name}`,
-          "Execute the following workflow exactly as a local automation task.",
-          workflow.text,
-        ].join("\n\n");
+          await automationStore.recordTaskRunResult(task.id, {
+            success: result.success,
+            message: result.success
+              ? `Replay completed: ${result.actionsExecuted}/${result.actionsTotal} actions.`
+              : `Replay failed: ${result.errors.map((e) => e.error).join("; ")}`,
+            successCount: result.success ? 1 : 0,
+            totalCount: 1,
+          });
+        } else {
+          // Manual workflow: use AI-driven execution
+          const authStatus = await authService.getStatus();
+          const authProvider = authStatus.defaultProvider;
+          if (!authProvider) {
+            throw new Error("No auth provider is configured for automation runs.");
+          }
 
-        const commandResponse = await fetch(`${automationBaseUrl}/api/live-sessions/${session.id}/commands`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            instruction,
-            authProvider,
-            model: config.model,
-          }),
-        });
+          const session = await liveStore.createSession(config.model, authProvider as AuthProvider);
+          await liveStore.appendEvent(session.id, {
+            type: "status",
+            level: "info",
+            message: `${trigger === "manual" ? "Manual" : "Scheduled"} workflow run started.`,
+            payload: {
+              scheduledTaskId: task.id,
+              workflowUuid: workflow.uuid,
+              workflowName: workflow.name,
+            },
+          });
 
-        if (!commandResponse.ok) {
-          const errorText = await commandResponse.text();
-          throw new Error(`Automation launch failed: HTTP ${commandResponse.status} ${errorText}`);
+          const instruction = [
+            `Workflow: ${workflow.name}`,
+            "Execute the following workflow exactly as a local automation task.",
+            workflow.text,
+          ].join("\n\n");
+
+          const commandResponse = await fetch(`${automationBaseUrl}/api/live-sessions/${session.id}/commands`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              instruction,
+              authProvider,
+              model: config.model,
+            }),
+          });
+
+          if (!commandResponse.ok) {
+            const errorText = await commandResponse.text();
+            throw new Error(`Automation launch failed: HTTP ${commandResponse.status} ${errorText}`);
+          }
+
+          const settledSession = await waitForSessionToSettle(session.id);
+          const success = settledSession.status !== "error";
+          const message = success
+            ? settledSession.latestSummary ?? "Workflow completed."
+            : settledSession.error ?? "Workflow failed.";
+
+          await automationStore.recordTaskRunResult(task.id, {
+            success,
+            message,
+            successCount: success ? 1 : 0,
+            totalCount: 1,
+          });
         }
-
-        const settledSession = await waitForSessionToSettle(session.id);
-        const success = settledSession.status !== "error";
-        const message = success
-          ? settledSession.latestSummary ?? "Workflow completed."
-          : settledSession.error ?? "Workflow failed.";
-
-        await automationStore.recordTaskRunResult(task.id, {
-          success,
-          message,
-          successCount: success ? 1 : 0,
-          totalCount: 1,
-        });
       } catch (error) {
         await automationStore.recordTaskRunResult(taskId, {
           success: false,
@@ -885,6 +913,10 @@ export async function createServer(config: {
         uuid: workflow.uuid,
         name: workflow.name,
         text: workflow.text,
+        type: workflow.type || "manual",
+        recorded_actions: workflow.recorded_actions,
+        recording_url: workflow.recording_url,
+        recording_metadata: workflow.recording_metadata,
       })),
     });
   });
@@ -899,6 +931,10 @@ export async function createServer(config: {
       uuid: workflow.uuid,
       name: workflow.name,
       text: workflow.text,
+      type: workflow.type || "manual",
+      recorded_actions: workflow.recorded_actions,
+      recording_url: workflow.recording_url,
+      recording_metadata: workflow.recording_metadata,
     });
   });
 
@@ -914,6 +950,7 @@ export async function createServer(config: {
       uuid: workflow.uuid,
       name: workflow.name,
       text: workflow.text,
+      type: workflow.type,
     });
   });
 
@@ -956,6 +993,137 @@ export async function createServer(config: {
       return;
     }
     response.json({ ok: true });
+  });
+
+  // ==================== Recorded Workflows ====================
+
+  app.post("/api/workflows/recorded", async (request, response) => {
+    const name = String(request.body?.name ?? "").trim();
+    const recording_url = String(request.body?.recording_url ?? "").trim();
+    const recorded_actions = request.body?.recorded_actions as RecordedAction[] | undefined;
+    const duration_ms = Number(request.body?.duration_ms ?? 0);
+
+    if (!name || !recorded_actions || recorded_actions.length === 0) {
+      response.status(400).json({ error: "name and recorded_actions are required." });
+      return;
+    }
+
+    const workflow = await automationStore.createRecordedWorkflow({
+      name,
+      recording_url,
+      recorded_actions,
+      duration_ms,
+    });
+
+    response.status(201).json(workflow);
+  });
+
+  app.post("/api/workflows/:uuid/replay", async (request, response) => {
+    const workflow = automationStore.getWorkflow(request.params.uuid);
+    if (!workflow) {
+      response.status(404).json({ error: "Workflow not found." });
+      return;
+    }
+    if (workflow.type !== "recorded" || !workflow.recorded_actions?.length) {
+      response.status(400).json({ error: "Workflow has no recorded actions." });
+      return;
+    }
+
+    const existingProgress = getReplayProgress(workflow.uuid);
+    if (existingProgress?.status === "running") {
+      response.status(409).json({ error: "Replay already in progress." });
+      return;
+    }
+
+    try {
+      // Open a browser session for replay
+      await browserSessionManager.open(workflow.uuid + "-replay", {
+        url: workflow.recording_url,
+      });
+      const sessionId = workflow.uuid + "-replay";
+
+      // Start replay asynchronously
+      void replayWorkflow({
+        workflowUuid: workflow.uuid,
+        workflowName: workflow.name,
+        recordingUrl: workflow.recording_url || "",
+        actions: workflow.recorded_actions,
+        browserSession: browserSessionManager,
+        sessionId,
+        artifactDir: path.join(config.rootDir, "data"),
+      });
+
+      response.json({ started: true, uuid: workflow.uuid });
+    } catch (error) {
+      response.status(500).json({ error: error instanceof Error ? error.message : String(error) });
+    }
+  });
+
+  app.get("/api/workflows/:uuid/replay-status", (request, response) => {
+    const workflow = automationStore.getWorkflow(request.params.uuid);
+    if (!workflow) {
+      response.status(404).json({ error: "Workflow not found." });
+      return;
+    }
+
+    const progress = getReplayProgress(workflow.uuid);
+    if (!progress) {
+      response.json({ status: "idle", currentAction: 0, totalActions: 0, duration_ms: 0, errors: [] });
+      return;
+    }
+    response.json(progress);
+  });
+
+  app.post("/api/workflows/:uuid/replay/stop", (request, response) => {
+    const stopped = stopReplayEngine(request.params.uuid);
+    response.json({ stopped });
+  });
+
+  app.get("/api/workflows/:uuid/screenshots", async (request, response) => {
+    const uuid = request.params.uuid;
+    const screenshotsDir = path.join(config.rootDir, "data", "workflows", uuid);
+    try {
+      const walkDir = async (dir: string): Promise<string[]> => {
+        const files: string[] = [];
+        try {
+          const entries = await fs.readdir(dir, { withFileTypes: true });
+          for (const entry of entries) {
+            const fullPath = path.join(dir, entry.name);
+            if (entry.isDirectory()) {
+              files.push(...(await walkDir(fullPath)));
+            } else if (entry.name.endsWith(".png") || entry.name.endsWith(".jpg")) {
+              files.push(path.relative(screenshotsDir, fullPath).replace(/\\/g, "/"));
+            }
+          }
+        } catch {}
+        return files;
+      };
+      const files = await walkDir(screenshotsDir);
+      response.json({ screenshots: files });
+    } catch {
+      response.json({ screenshots: [] });
+    }
+  });
+
+  app.get("/api/workflows/:uuid/screenshots/*", async (request: any, response: any) => {
+    const uuid = request.params.uuid as string;
+    const filename = (request.params[0] ?? request.params["0"] ?? "") as string;
+    const filePath = path.join(config.rootDir, "data", "workflows", uuid, filename);
+
+    // Security: ensure resolved path is within the expected directory
+    const resolved = path.resolve(filePath);
+    const base = path.resolve(path.join(config.rootDir, "data", "workflows", uuid));
+    if (!resolved.startsWith(base)) {
+      response.status(403).json({ error: "Access denied." });
+      return;
+    }
+
+    try {
+      await fs.access(filePath);
+      response.sendFile(resolved);
+    } catch {
+      response.status(404).json({ error: "Screenshot not found." });
+    }
   });
 
   app.get("/api/scheduled-tasks", (_request, response) => {
@@ -2092,6 +2260,61 @@ export async function createServer(config: {
       return;
     }
     response.json({ ok: true });
+  });
+
+  // ---- Skill Resolution Cascade ----
+
+  app.post("/api/plugins/skills/search", async (request, response) => {
+    const { query } = request.body ?? {};
+    if (!query) {
+      response.status(400).json({ error: "query is required." });
+      return;
+    }
+    try {
+      const [clawResults, ghResults] = await Promise.all([
+        pluginStore.searchClawHub(String(query)),
+        pluginStore.searchGitHub(String(query)),
+      ]);
+      response.json({ clawhub: clawResults, github: ghResults });
+    } catch (err: any) {
+      response.status(500).json({ error: err.message });
+    }
+  });
+
+  app.post("/api/plugins/skills/generate", async (request, response) => {
+    const { description } = request.body ?? {};
+    if (!description) {
+      response.status(400).json({ error: "description is required." });
+      return;
+    }
+    try {
+      const generated = await pluginStore.autoGenerateSkill(
+        String(description),
+        await authService.getResponsesClient(),
+        config.model ?? "gpt-5.4",
+      );
+      response.status(201).json(generated);
+    } catch (err: any) {
+      response.status(500).json({ error: err.message });
+    }
+  });
+
+  app.get("/api/plugins/skills/resolve", async (request, response) => {
+    const query = String(request.query.q ?? "");
+    if (!query) {
+      response.status(400).json({ error: "q query parameter is required." });
+      return;
+    }
+    try {
+      const result = await pluginStore.resolveSkill(
+        query,
+        await authService.getResponsesClient(),
+        config.model ?? "gpt-5.4",
+      );
+      response.json(result);
+    } catch (err: any) {
+      response.status(500).json({ error: err.message });
+    }
   });
 
   // ---- Plugin Management: MCP Servers ----

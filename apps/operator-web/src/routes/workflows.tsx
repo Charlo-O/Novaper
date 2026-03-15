@@ -1,11 +1,17 @@
 import { createFileRoute } from '@tanstack/react-router';
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef, useCallback } from 'react';
 import {
   listWorkflows,
   createWorkflow,
   updateWorkflow,
   deleteWorkflow,
+  createRecordedWorkflow,
+  replayWorkflow as apiReplayWorkflow,
+  getReplayStatus,
+  stopReplay as apiStopReplay,
   type Workflow,
+  type RecordedAction,
+  type WorkflowReplayStatus,
 } from '../api';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -19,8 +25,23 @@ import {
   DialogTitle,
   DialogFooter,
 } from '@/components/ui/dialog';
-import { Plus, Edit, Trash2, Loader2, ArrowUp, ArrowDown } from 'lucide-react';
+import {
+  Plus,
+  Edit,
+  Trash2,
+  Loader2,
+  ArrowUp,
+  ArrowDown,
+  Circle,
+  Square,
+  Play,
+  MousePointer,
+  Keyboard,
+  Navigation,
+  Clock,
+} from 'lucide-react';
 import { useTranslation } from '../lib/i18n-context';
+import { useElectron } from '../hooks/useElectron';
 
 export const Route = createFileRoute('/workflows')({
   component: WorkflowsComponent,
@@ -118,8 +139,6 @@ const parseWorkflowTextToSteps = (text: string): WorkflowStep[] => {
       continue;
     }
 
-    // Preserve manual line breaks and list formatting in description blocks.
-    // Strip only one visual indentation level from serialized content.
     const normalizedLine = line.replace(/^\s{1,4}/, '');
     current.descriptionLines.push(normalizedLine);
     inDescriptionBlock = true;
@@ -168,8 +187,57 @@ const buildWorkflowTextFromSteps = (
     .join('\n\n');
 };
 
+function formatDuration(ms: number): string {
+  const seconds = Math.floor(ms / 1000);
+  const minutes = Math.floor(seconds / 60);
+  const remainingSeconds = seconds % 60;
+  if (minutes > 0) return `${minutes}m ${remainingSeconds}s`;
+  return `${remainingSeconds}s`;
+}
+
+function getActionIcon(type: string) {
+  switch (type) {
+    case 'click':
+    case 'dblclick':
+      return <MousePointer className="w-3 h-3" />;
+    case 'type':
+    case 'keypress':
+      return <Keyboard className="w-3 h-3" />;
+    case 'navigate':
+      return <Navigation className="w-3 h-3" />;
+    default:
+      return <Circle className="w-3 h-3" />;
+  }
+}
+
+function getActionDescription(action: RecordedAction): string {
+  switch (action.type) {
+    case 'click':
+      return `Click ${action.target.text ? `"${action.target.text.slice(0, 30)}"` : action.target.tag}`;
+    case 'dblclick':
+      return `Double click ${action.target.text ? `"${action.target.text.slice(0, 30)}"` : action.target.tag}`;
+    case 'type':
+      return `Type "${(action.value || '').slice(0, 30)}"`;
+    case 'keypress':
+      return `Press ${action.value || 'key'}`;
+    case 'navigate':
+      return `Navigate to ${(action.value || '').slice(0, 40)}`;
+    case 'scroll':
+      return 'Scroll page';
+    case 'select':
+      return `Select "${(action.value || '').slice(0, 30)}"`;
+    case 'hover':
+      return `Hover ${action.target.tag}`;
+    case 'wait':
+      return `Wait ${action.timestamp}ms`;
+    default:
+      return action.type;
+  }
+}
+
 function WorkflowsComponent() {
   const t = useTranslation();
+  const { isElectron, api } = useElectron();
   const [workflows, setWorkflows] = useState<Workflow[]>([]);
   const [loading, setLoading] = useState(true);
   const [showDialog, setShowDialog] = useState(false);
@@ -180,9 +248,36 @@ function WorkflowsComponent() {
   });
   const [saving, setSaving] = useState(false);
 
-  // Load workflows on mount
+  // Recording state
+  const [showRecordDialog, setShowRecordDialog] = useState(false);
+  const [recordingUrl, setRecordingUrl] = useState('');
+  const [recordingName, setRecordingName] = useState('');
+  const [isRecording, setIsRecording] = useState(false);
+  const [recordedActions, setRecordedActions] = useState<RecordedAction[]>([]);
+  const [recordingWebviewId, setRecordingWebviewId] = useState<string | null>(null);
+  const [recordingStartTime, setRecordingStartTime] = useState(0);
+  const [savingRecording, setSavingRecording] = useState(false);
+  const actionsEndRef = useRef<HTMLDivElement>(null);
+
+  // Replay state
+  const [replayingUuid, setReplayingUuid] = useState<string | null>(null);
+  const [replayStatus, setReplayStatus] = useState<WorkflowReplayStatus | null>(null);
+  const replayPollRef = useRef<ReturnType<typeof setInterval> | null>(null);
+
   useEffect(() => {
     loadWorkflows();
+  }, []);
+
+  // Auto-scroll action list during recording
+  useEffect(() => {
+    actionsEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+  }, [recordedActions]);
+
+  // Cleanup replay polling
+  useEffect(() => {
+    return () => {
+      if (replayPollRef.current) clearInterval(replayPollRef.current);
+    };
   }, []);
 
   const loadWorkflows = async () => {
@@ -299,16 +394,157 @@ function WorkflowsComponent() {
     }
   };
 
+  // ==================== Recording ====================
+
+  const handleStartRecordDialog = () => {
+    setRecordingUrl('');
+    setRecordingName('');
+    setRecordedActions([]);
+    setIsRecording(false);
+    setShowRecordDialog(true);
+  };
+
+  const handleStartRecording = useCallback(async () => {
+    if (!api || !recordingUrl.trim()) return;
+
+    try {
+      // Create a webview for recording
+      const webviewId = `rec-${Date.now()}`;
+      const createResult = await api.createWebView(webviewId, recordingUrl.trim());
+      if (!createResult?.success) {
+        console.error('Failed to create webview:', createResult?.error);
+        return;
+      }
+
+      await api.showWebview(webviewId);
+      // Give the page time to load
+      await new Promise(resolve => setTimeout(resolve, 2000));
+
+      const result = await api.startRecording(webviewId);
+      if (!result?.success) {
+        console.error('Failed to start recording:', result?.error);
+        return;
+      }
+
+      setRecordingWebviewId(webviewId);
+      setRecordingStartTime(Date.now());
+      setIsRecording(true);
+      setRecordedActions([]);
+    } catch (error) {
+      console.error('Failed to start recording:', error);
+    }
+  }, [api, recordingUrl]);
+
+  // Listen for recorded actions from Electron
+  useEffect(() => {
+    if (!api || !isRecording) return;
+
+    const cleanup = api.onRecordedAction((_webviewId: string, action: RecordedAction) => {
+      setRecordedActions(prev => [...prev, action]);
+    });
+
+    return cleanup;
+  }, [api, isRecording]);
+
+  const handleStopRecording = useCallback(async () => {
+    if (!api || !recordingWebviewId) return;
+
+    try {
+      const result = await api.stopRecording(recordingWebviewId);
+      if (result?.success && result.actions) {
+        setRecordedActions(result.actions as RecordedAction[]);
+      }
+      setIsRecording(false);
+
+      // Hide the webview
+      await api.hideWebView(recordingWebviewId);
+    } catch (error) {
+      console.error('Failed to stop recording:', error);
+      setIsRecording(false);
+    }
+  }, [api, recordingWebviewId]);
+
+  const handleSaveRecording = async () => {
+    if (!recordingName.trim() || recordedActions.length === 0) return;
+
+    try {
+      setSavingRecording(true);
+      await createRecordedWorkflow({
+        name: recordingName.trim(),
+        recording_url: recordingUrl.trim(),
+        recorded_actions: recordedActions,
+        duration_ms: Date.now() - recordingStartTime,
+      });
+
+      // Cleanup webview
+      if (api && recordingWebviewId) {
+        await api.webviewDestroy(recordingWebviewId);
+      }
+
+      setShowRecordDialog(false);
+      setRecordingWebviewId(null);
+      await loadWorkflows();
+    } catch (error) {
+      console.error('Failed to save recording:', error);
+    } finally {
+      setSavingRecording(false);
+    }
+  };
+
+  // ==================== Replay ====================
+
+  const handleReplay = async (uuid: string) => {
+    try {
+      await apiReplayWorkflow(uuid);
+      setReplayingUuid(uuid);
+
+      // Start polling replay status
+      const poll = setInterval(async () => {
+        try {
+          const status = await getReplayStatus(uuid);
+          setReplayStatus(status);
+          if (status.status !== 'running') {
+            clearInterval(poll);
+            replayPollRef.current = null;
+          }
+        } catch {
+          clearInterval(poll);
+          replayPollRef.current = null;
+        }
+      }, 1000);
+      replayPollRef.current = poll;
+    } catch (error) {
+      console.error('Failed to start replay:', error);
+    }
+  };
+
+  const handleStopReplay = async () => {
+    if (!replayingUuid) return;
+    try {
+      await apiStopReplay(replayingUuid);
+    } catch (error) {
+      console.error('Failed to stop replay:', error);
+    }
+  };
+
   const hasValidStep = formData.steps.some(step => step.title.trim());
 
   return (
     <div className="container mx-auto p-6 max-w-7xl">
       <div className="flex justify-between items-center mb-6">
         <h1 className="text-3xl font-bold">{t.workflows.title}</h1>
-        <Button onClick={handleCreate}>
-          <Plus className="w-4 h-4 mr-2" />
-          {t.workflows.createNew}
-        </Button>
+        <div className="flex gap-2">
+          {isElectron && (
+            <Button variant="outline" onClick={handleStartRecordDialog}>
+              <Circle className="w-4 h-4 mr-2 text-red-500" />
+              {t.workflows.recordNew}
+            </Button>
+          )}
+          <Button onClick={handleCreate}>
+            <Plus className="w-4 h-4 mr-2" />
+            {t.workflows.createNew}
+          </Button>
+        </div>
       </div>
 
       {loading ? (
@@ -329,65 +565,42 @@ function WorkflowsComponent() {
               className="hover:shadow-md transition-shadow"
             >
               <CardHeader>
-                <CardTitle className="text-lg">{workflow.name}</CardTitle>
+                <div className="flex items-center justify-between">
+                  <CardTitle className="text-lg">{workflow.name}</CardTitle>
+                  <span className={`text-xs px-2 py-0.5 rounded-full ${
+                    workflow.type === 'recorded'
+                      ? 'bg-red-100 text-red-700 dark:bg-red-900/30 dark:text-red-400'
+                      : 'bg-sky-100 text-sky-700 dark:bg-sky-900/30 dark:text-sky-400'
+                  }`}>
+                    {workflow.type === 'recorded' ? t.workflows.recorded : t.workflows.manual}
+                  </span>
+                </div>
               </CardHeader>
               <CardContent>
-                {(() => {
-                  const steps = parseWorkflowTextToSteps(workflow.text).filter(
-                    step => step.title.trim() || step.description.trim()
-                  );
-                  const previewSteps = steps.slice(0, 3);
-                  return (
-                    <div className="mb-4 space-y-2">
-                      <p className="text-xs text-slate-500 dark:text-slate-400">
-                        {t.workflows.stepCount}: {steps.length}
-                      </p>
-                      {previewSteps.map((step, index) => (
-                        <div key={`${workflow.uuid}-preview-${index}`}>
-                          <p className="text-sm text-slate-600 dark:text-slate-400 line-clamp-1">
-                            {index + 1}. {step.title || step.description}
-                          </p>
-                          {step.description.trim() && (
-                            <p className="text-xs text-slate-500 dark:text-slate-400 line-clamp-1">
-                              {t.workflows.stepDescriptionLabel}:{' '}
-                              {step.description}
-                            </p>
-                          )}
-                        </div>
-                      ))}
-                      {steps.length > 3 && (
-                        <p className="text-xs text-slate-500 dark:text-slate-400">
-                          +{steps.length - 3} {t.workflows.moreSteps}
-                        </p>
-                      )}
-                    </div>
-                  );
-                })()}
-                <div className="flex gap-2">
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    onClick={() => handleEdit(workflow)}
-                  >
-                    <Edit className="w-3 h-3 mr-1" />
-                    {t.common.edit}
-                  </Button>
-                  <Button
-                    variant="destructive"
-                    size="sm"
-                    onClick={() => handleDelete(workflow.uuid)}
-                  >
-                    <Trash2 className="w-3 h-3 mr-1" />
-                    {t.common.delete}
-                  </Button>
-                </div>
+                {workflow.type === 'recorded' ? (
+                  <RecordedWorkflowCard
+                    workflow={workflow}
+                    t={t}
+                    onReplay={() => handleReplay(workflow.uuid)}
+                    onDelete={() => handleDelete(workflow.uuid)}
+                    replayStatus={replayingUuid === workflow.uuid ? replayStatus : null}
+                    onStopReplay={handleStopReplay}
+                  />
+                ) : (
+                  <ManualWorkflowCard
+                    workflow={workflow}
+                    t={t}
+                    onEdit={() => handleEdit(workflow)}
+                    onDelete={() => handleDelete(workflow.uuid)}
+                  />
+                )}
               </CardContent>
             </Card>
           ))}
         </div>
       )}
 
-      {/* Create/Edit Dialog: header/footer fixed, only step list scrolls */}
+      {/* Create/Edit Dialog for manual workflows */}
       <Dialog open={showDialog} onOpenChange={setShowDialog}>
         <DialogContent
           className="sm:max-w-[680px] max-h-[85vh] flex flex-col p-0 gap-0 overflow-hidden"
@@ -398,7 +611,6 @@ function WorkflowsComponent() {
               {editingWorkflow ? t.workflows.edit : t.workflows.create}
             </DialogTitle>
           </DialogHeader>
-          {/* Scrollable body: name + steps list only */}
           <div className="flex-1 min-h-0 overflow-y-auto px-6 py-4">
             <div className="space-y-4 pr-1">
               <div className="space-y-2">
@@ -529,6 +741,318 @@ function WorkflowsComponent() {
           </DialogFooter>
         </DialogContent>
       </Dialog>
+
+      {/* Recording Dialog */}
+      <Dialog open={showRecordDialog} onOpenChange={(open) => {
+        if (!open && isRecording) return; // Don't close while recording
+        if (!open && recordingWebviewId && api) {
+          api.hideWebView(recordingWebviewId);
+          api.webviewDestroy(recordingWebviewId);
+          setRecordingWebviewId(null);
+        }
+        setShowRecordDialog(open);
+      }}>
+        <DialogContent
+          className="sm:max-w-[700px] max-h-[85vh] flex flex-col p-0 gap-0 overflow-hidden"
+          onOpenAutoFocus={e => e.preventDefault()}
+        >
+          <DialogHeader className="flex-shrink-0 px-6 pt-6 pb-3 pr-12 border-b border-slate-200 dark:border-slate-800">
+            <DialogTitle className="flex items-center gap-2">
+              {isRecording && (
+                <span className="relative flex h-3 w-3">
+                  <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-red-400 opacity-75" />
+                  <span className="relative inline-flex rounded-full h-3 w-3 bg-red-500" />
+                </span>
+              )}
+              {isRecording ? t.workflows.recording : t.workflows.recordNew}
+            </DialogTitle>
+          </DialogHeader>
+
+          <div className="flex-1 min-h-0 overflow-y-auto px-6 py-4">
+            <div className="space-y-4">
+              {/* Name & URL inputs */}
+              <div className="grid grid-cols-2 gap-3">
+                <div className="space-y-1">
+                  <Label className="text-xs">{t.workflows.name}</Label>
+                  <Input
+                    value={recordingName}
+                    onChange={e => setRecordingName(e.target.value)}
+                    placeholder={t.workflows.namePlaceholder}
+                    disabled={isRecording}
+                  />
+                </div>
+                <div className="space-y-1">
+                  <Label className="text-xs">{t.workflows.recordingUrl}</Label>
+                  <Input
+                    value={recordingUrl}
+                    onChange={e => setRecordingUrl(e.target.value)}
+                    placeholder={t.workflows.recordingUrlPlaceholder}
+                    disabled={isRecording}
+                  />
+                </div>
+              </div>
+
+              {/* Start/Stop recording button */}
+              <div className="flex gap-2">
+                {!isRecording ? (
+                  <Button
+                    onClick={handleStartRecording}
+                    disabled={!recordingUrl.trim()}
+                    className="bg-red-500 hover:bg-red-600 text-white"
+                  >
+                    <Circle className="w-4 h-4 mr-2" />
+                    {t.workflows.recordingStart}
+                  </Button>
+                ) : (
+                  <Button
+                    onClick={handleStopRecording}
+                    variant="destructive"
+                  >
+                    <Square className="w-4 h-4 mr-2" />
+                    {t.workflows.recordingStop}
+                  </Button>
+                )}
+                {isRecording && (
+                  <span className="flex items-center text-xs text-slate-500 dark:text-slate-400">
+                    <Clock className="w-3 h-3 mr-1" />
+                    {recordedActions.length} {t.workflows.actionCount}
+                  </span>
+                )}
+              </div>
+
+              {/* Recorded actions list */}
+              <div className="space-y-1">
+                <Label className="text-xs">{t.workflows.recordingActions}</Label>
+                <div className="rounded-lg border bg-slate-50/40 dark:bg-slate-900/30 max-h-[300px] overflow-y-auto">
+                  {recordedActions.length === 0 ? (
+                    <p className="text-xs text-slate-500 dark:text-slate-400 p-4 text-center">
+                      {t.workflows.recordingNoActions}
+                    </p>
+                  ) : (
+                    <div className="divide-y divide-slate-200 dark:divide-slate-700">
+                      {recordedActions.map((action, index) => (
+                        <div
+                          key={action.id || index}
+                          className="flex items-center gap-2 px-3 py-2 text-xs"
+                        >
+                          <span className="text-slate-400 w-5 text-right shrink-0">
+                            {index + 1}
+                          </span>
+                          <span className="text-sky-500 shrink-0">
+                            {getActionIcon(action.type)}
+                          </span>
+                          <span className="text-slate-600 dark:text-slate-300 truncate">
+                            {getActionDescription(action)}
+                          </span>
+                          <span className="text-slate-400 ml-auto shrink-0">
+                            {formatDuration(action.timestamp)}
+                          </span>
+                        </div>
+                      ))}
+                      <div ref={actionsEndRef} />
+                    </div>
+                  )}
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <DialogFooter className="flex-shrink-0 border-t border-slate-200 dark:border-slate-800 px-6 py-4">
+            <Button
+              variant="outline"
+              onClick={() => {
+                if (isRecording) handleStopRecording();
+                if (recordingWebviewId && api) {
+                  api.hideWebView(recordingWebviewId);
+                  api.webviewDestroy(recordingWebviewId);
+                  setRecordingWebviewId(null);
+                }
+                setShowRecordDialog(false);
+              }}
+            >
+              {t.common.cancel}
+            </Button>
+            <Button
+              onClick={handleSaveRecording}
+              disabled={!recordingName.trim() || recordedActions.length === 0 || isRecording || savingRecording}
+            >
+              {savingRecording ? (
+                <>
+                  <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+                  {t.common.loading}
+                </>
+              ) : (
+                t.workflows.recordingSave
+              )}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
+  );
+}
+
+// ==================== Sub-components ====================
+
+function ManualWorkflowCard({
+  workflow,
+  t,
+  onEdit,
+  onDelete,
+}: {
+  workflow: Workflow;
+  t: any;
+  onEdit: () => void;
+  onDelete: () => void;
+}) {
+  const steps = parseWorkflowTextToSteps(workflow.text).filter(
+    step => step.title.trim() || step.description.trim()
+  );
+  const previewSteps = steps.slice(0, 3);
+
+  return (
+    <>
+      <div className="mb-4 space-y-2">
+        <p className="text-xs text-slate-500 dark:text-slate-400">
+          {t.workflows.stepCount}: {steps.length}
+        </p>
+        {previewSteps.map((step, index) => (
+          <div key={`${workflow.uuid}-preview-${index}`}>
+            <p className="text-sm text-slate-600 dark:text-slate-400 line-clamp-1">
+              {index + 1}. {step.title || step.description}
+            </p>
+            {step.description.trim() && (
+              <p className="text-xs text-slate-500 dark:text-slate-400 line-clamp-1">
+                {t.workflows.stepDescriptionLabel}: {step.description}
+              </p>
+            )}
+          </div>
+        ))}
+        {steps.length > 3 && (
+          <p className="text-xs text-slate-500 dark:text-slate-400">
+            +{steps.length - 3} {t.workflows.moreSteps}
+          </p>
+        )}
+      </div>
+      <div className="flex gap-2">
+        <Button variant="outline" size="sm" onClick={onEdit}>
+          <Edit className="w-3 h-3 mr-1" />
+          {t.common.edit}
+        </Button>
+        <Button variant="destructive" size="sm" onClick={onDelete}>
+          <Trash2 className="w-3 h-3 mr-1" />
+          {t.common.delete}
+        </Button>
+      </div>
+    </>
+  );
+}
+
+function RecordedWorkflowCard({
+  workflow,
+  t,
+  onReplay,
+  onDelete,
+  replayStatus,
+  onStopReplay,
+}: {
+  workflow: Workflow;
+  t: any;
+  onReplay: () => void;
+  onDelete: () => void;
+  replayStatus: WorkflowReplayStatus | null;
+  onStopReplay: () => void;
+}) {
+  const actionCount = workflow.recording_metadata?.action_count ?? workflow.recorded_actions?.length ?? 0;
+  const duration = workflow.recording_metadata?.duration_ms ?? 0;
+  const isReplaying = replayStatus?.status === 'running';
+
+  return (
+    <>
+      <div className="mb-4 space-y-2">
+        <div className="flex items-center gap-3 text-xs text-slate-500 dark:text-slate-400">
+          <span>{actionCount} {t.workflows.actionCount}</span>
+          {duration > 0 && (
+            <span>{t.workflows.duration}: {formatDuration(duration)}</span>
+          )}
+        </div>
+        {workflow.recording_url && (
+          <p className="text-xs text-slate-500 dark:text-slate-400 truncate">
+            URL: {workflow.recording_url}
+          </p>
+        )}
+
+        {/* Preview first 5 actions */}
+        {workflow.recorded_actions && workflow.recorded_actions.length > 0 && (
+          <div className="space-y-1 mt-2">
+            {workflow.recorded_actions.slice(0, 5).map((action, index) => (
+              <div key={action.id || index} className="flex items-center gap-1.5 text-xs text-slate-600 dark:text-slate-400">
+                <span className="text-sky-500 shrink-0">{getActionIcon(action.type)}</span>
+                <span className="truncate">{getActionDescription(action)}</span>
+              </div>
+            ))}
+            {workflow.recorded_actions.length > 5 && (
+              <p className="text-xs text-slate-400">
+                +{workflow.recorded_actions.length - 5} {t.workflows.moreSteps}
+              </p>
+            )}
+          </div>
+        )}
+
+        {/* Replay progress */}
+        {replayStatus && replayStatus.status !== 'idle' && (
+          <div className="mt-2 p-2 rounded-lg bg-slate-100 dark:bg-slate-800/50">
+            <div className="flex items-center justify-between text-xs mb-1">
+              <span className={`font-medium ${
+                replayStatus.status === 'completed' ? 'text-green-600' :
+                replayStatus.status === 'failed' ? 'text-red-600' :
+                replayStatus.status === 'stopped' ? 'text-yellow-600' :
+                'text-sky-600'
+              }`}>
+                {replayStatus.status === 'completed' ? t.workflows.replayCompleted :
+                 replayStatus.status === 'failed' ? t.workflows.replayFailed :
+                 replayStatus.status === 'stopped' ? t.workflows.replayStopped :
+                 t.workflows.replayProgress}
+              </span>
+              <span className="text-slate-500">
+                {replayStatus.currentAction}/{replayStatus.totalActions}
+              </span>
+            </div>
+            <div className="w-full bg-slate-200 dark:bg-slate-700 rounded-full h-1.5">
+              <div
+                className={`h-1.5 rounded-full transition-all ${
+                  replayStatus.status === 'completed' ? 'bg-green-500' :
+                  replayStatus.status === 'failed' ? 'bg-red-500' :
+                  'bg-sky-500'
+                }`}
+                style={{ width: `${replayStatus.totalActions > 0 ? (replayStatus.currentAction / replayStatus.totalActions) * 100 : 0}%` }}
+              />
+            </div>
+            {replayStatus.errors.length > 0 && (
+              <p className="text-xs text-red-500 mt-1 truncate">
+                {replayStatus.errors[replayStatus.errors.length - 1].error}
+              </p>
+            )}
+          </div>
+        )}
+      </div>
+      <div className="flex gap-2">
+        {isReplaying ? (
+          <Button variant="outline" size="sm" onClick={onStopReplay}>
+            <Square className="w-3 h-3 mr-1" />
+            {t.workflows.replayStop}
+          </Button>
+        ) : (
+          <Button variant="outline" size="sm" onClick={onReplay}>
+            <Play className="w-3 h-3 mr-1" />
+            {t.workflows.replay}
+          </Button>
+        )}
+        <Button variant="destructive" size="sm" onClick={onDelete}>
+          <Trash2 className="w-3 h-3 mr-1" />
+          {t.common.delete}
+        </Button>
+      </div>
+    </>
   );
 }
