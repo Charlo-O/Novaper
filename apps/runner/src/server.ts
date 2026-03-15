@@ -1105,26 +1105,8 @@ export async function createServer(config: {
     }
   });
 
-  app.get("/api/workflows/:uuid/screenshots/*", async (request: any, response: any) => {
-    const uuid = request.params.uuid as string;
-    const filename = (request.params[0] ?? request.params["0"] ?? "") as string;
-    const filePath = path.join(config.rootDir, "data", "workflows", uuid, filename);
-
-    // Security: ensure resolved path is within the expected directory
-    const resolved = path.resolve(filePath);
-    const base = path.resolve(path.join(config.rootDir, "data", "workflows", uuid));
-    if (!resolved.startsWith(base)) {
-      response.status(403).json({ error: "Access denied." });
-      return;
-    }
-
-    try {
-      await fs.access(filePath);
-      response.sendFile(resolved);
-    } catch {
-      response.status(404).json({ error: "Screenshot not found." });
-    }
-  });
+  // Serve workflow screenshots as static files
+  app.use("/api/workflows-static", express.static(path.join(config.rootDir, "data", "workflows")));
 
   app.get("/api/scheduled-tasks", (_request, response) => {
     response.json({
