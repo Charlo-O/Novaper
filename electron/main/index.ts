@@ -114,6 +114,7 @@ async function bootBackend(): Promise<number> {
         ? path.join((process as any).resourcesPath, "app")
         : path.resolve(MAIN_DIST, "../.."),
       userDataDir: novaperDataDir,
+      webViewManager: webViewManager ?? undefined,
     });
     log.info(`[Backend] Express server ready on port ${port}`);
   } catch (err) {
@@ -334,13 +335,13 @@ app.whenReady().then(async () => {
   setupUserAgentStripping();
   registerIpcHandlers();
 
+  await createWindow();
+
   try {
     await bootBackend();
   } catch (err) {
     log.error("[App] Backend boot failed, continuing with UI only:", err);
   }
-
-  await createWindow();
 
   app.on("activate", () => {
     if (BrowserWindow.getAllWindows().length === 0) {

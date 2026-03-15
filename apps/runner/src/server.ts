@@ -416,6 +416,7 @@ export async function createServer(config: {
   host: string;
   model: string;
   openAIApiKey?: string;
+  webViewManager?: unknown;
 }) {
   const app = express();
   const operatorWebDir = path.join(config.rootDir, "apps", "operator-web", "dist");
@@ -423,10 +424,18 @@ export async function createServer(config: {
   const liveStore = new LiveSessionStore(path.join(config.rootDir, "data", "live-sessions"));
   const sidecar = new DesktopSidecar();
   const authService = new AuthService(config.rootDir, config.openAIApiKey);
-  const browserSessionManager = new BrowserSessionManager({
-    rootDir: config.rootDir,
-    sidecar,
-  });
+  let browserSessionManager: any;
+  if (config.webViewManager) {
+    const { ElectronBrowserAdapter } = await import(
+      "../../../electron/main/electronBrowserAdapter.js"
+    );
+    browserSessionManager = new ElectronBrowserAdapter(config.webViewManager as any);
+  } else {
+    browserSessionManager = new BrowserSessionManager({
+      rootDir: config.rootDir,
+      sidecar,
+    });
+  }
   const automationStore = new AutomationStore(path.join(config.rootDir, "data", "automation"));
   const deviceStore = new DeviceStore(path.join(config.rootDir, "data", "devices"));
   const pluginStore = new PluginStore(config.rootDir);
