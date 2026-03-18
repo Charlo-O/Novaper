@@ -8,7 +8,7 @@ import {
 } from "electron";
 import log from "electron-log";
 import path from "node:path";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { createWindowManager } from "./windowManager.js";
 import { WebViewManager } from "./webviewManager.js";
 import { ProfileManager } from "./profileManager.js";
@@ -104,9 +104,13 @@ async function bootBackend(): Promise<number> {
     // The runner's bootServer() starts Express in-process.
     // Path computed at runtime from PROJECT_ROOT.
     // Relative import — resolved by the bundler at build time
-    const { bootServer } = await import(
-      "../../apps/runner/src/index.js"
+    const runnerEntry = path.join(
+      MAIN_DIST,
+      "dist-electron",
+      "runner",
+      "index.js"
     );
+    const { bootServer } = await import(pathToFileURL(runnerEntry).href);
     await bootServer({
       port,
       host: "127.0.0.1",
