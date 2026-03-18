@@ -36,7 +36,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: novaper-windows
-          path: release/*.exe
+          path: dist/*.exe
 
   build-macos:
     runs-on: macos-latest
@@ -60,6 +60,7 @@ jobs:
           ELECTRON: "1"
         run: |
           npx cross-env ELECTRON=1 npm run --prefix apps/operator-web build
+          npm run build:electron
           npx electron-builder --mac
 
       - name: Upload macOS artifact
@@ -67,8 +68,8 @@ jobs:
         with:
           name: novaper-macos
           path: |
-            release/*.dmg
-            release/*.zip
+            dist/*.dmg
+            dist/*.zip
 
   build-linux:
     runs-on: ubuntu-latest
@@ -92,13 +93,14 @@ jobs:
           ELECTRON: "1"
         run: |
           npx cross-env ELECTRON=1 npm run --prefix apps/operator-web build
+          npm run build:electron
           npx electron-builder --linux
 
       - name: Upload Linux artifact
         uses: actions/upload-artifact@v4
         with:
           name: novaper-linux
-          path: release/*.AppImage
+          path: dist/*.AppImage
 
   publish-release:
     needs: [build-windows, build-macos, build-linux]
