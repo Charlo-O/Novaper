@@ -3,6 +3,7 @@ import { ScrcpyPlayer } from './ScrcpyPlayer';
 import { WidthControl } from './WidthControl';
 import { ResizableHandle } from './ResizableHandle';
 import { useLocalStorage } from '../hooks/useLocalStorage';
+import { useViewportWidth } from '../hooks/useViewportWidth';
 import type { ScreenshotResponse } from '../api';
 import { getScreenshot } from '../api';
 import { Button } from '@/components/ui/button';
@@ -34,6 +35,9 @@ interface DeviceMonitorProps {
   serial?: string;
   connectionType?: string;
   isVisible?: boolean;
+  isTaskActive?: boolean;
+  isCollapsed?: boolean;
+  onCollapsedChange?: (collapsed: boolean) => void;
   className?: string;
   /** Live session ID for SSE frame streaming */
   liveSessionId?: string;
@@ -44,12 +48,16 @@ export function DeviceMonitor({
   serial: _serial,
   connectionType,
   isVisible = true,
+  isTaskActive = false,
+  isCollapsed = false,
+  onCollapsedChange,
   className = '',
   liveSessionId,
 }: DeviceMonitorProps) {
   const t = useTranslation();
 
   const isRemoteDevice = connectionType === 'remote';
+  const viewportWidth = useViewportWidth();
   const [screenshot, setScreenshot] = useState<ScreenshotResponse | null>(null);
   const [useVideoStream, setUseVideoStream] = useState(!isRemoteDevice);
   const [videoStreamFailed, setVideoStreamFailed] = useState(true);
@@ -66,11 +74,7 @@ export function DeviceMonitor({
   const [showControls, setShowControls] = useState(false);
   const [panelWidth, setPanelWidth] = useLocalStorage<number | 'auto'>(
     'device-monitor-width',
-    320
-  );
-  const [isCollapsed, setIsCollapsed] = useLocalStorage<boolean>(
-    'device-monitor-collapsed',
-    true
+    360
   );
   const [fallbackReason, setFallbackReason] = useState<string | null>(null);
   const [showWebCodecsWarning, setShowWebCodecsWarning] = useState(false);
@@ -79,6 +83,9 @@ export function DeviceMonitor({
   const screenshotFetchingRef = useRef(false);
   const feedbackTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const controlsTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const lastCompactRef = useRef<boolean | null>(null);
+
+  const collapseThreshold = viewportWidth < 1280 ? 220 : 156;
 
   const showFeedback = (
     message: string,
@@ -113,12 +120,25 @@ export function DeviceMonitor({
   };
 
   const handleWidthChange = (width: number | 'auto') => {
+    if (width === 'auto') {
+      onCollapsedChange?.(false);
+    }
     setPanelWidth(width);
   };
 
   const handleResize = (deltaX: number) => {
-    if (typeof panelWidth !== 'number') return;
-    const newWidth = Math.min(640, Math.max(240, panelWidth + deltaX));
+    const baseWidth =
+      typeof panelWidth === 'number' ? panelWidth : Math.min(480, viewportWidth * 0.3);
+    const newWidth = Math.min(640, Math.max(0, baseWidth + deltaX));
+
+    if (newWidth <= collapseThreshold) {
+      onCollapsedChange?.(true);
+      return;
+    }
+
+    if (isCollapsed) {
+      onCollapsedChange?.(false);
+    }
     setPanelWidth(newWidth);
   };
 
@@ -207,7 +227,20 @@ export function DeviceMonitor({
   }, []);
 
   useEffect(() => {
-    if (!deviceId || !isVisible || isCollapsed) return;
+    const isCompactViewport = viewportWidth < 1180;
+    if (lastCompactRef.current === isCompactViewport) {
+      return;
+    }
+
+    if (isCompactViewport) {
+      onCollapsedChange?.(true);
+    }
+
+    lastCompactRef.current = isCompactViewport;
+  }, [onCollapsedChange, viewportWidth]);
+
+  useEffect(() => {
+    if (!deviceId || !isVisible || isCollapsed || !isTaskActive) return;
 
     const shouldPollScreenshots =
       displayMode === 'screenshot' ||
@@ -237,7 +270,14 @@ export function DeviceMonitor({
     const interval = setInterval(fetchScreenshot, 500);
 
     return () => clearInterval(interval);
-  }, [deviceId, videoStreamFailed, displayMode, isVisible, isCollapsed]);
+  }, [
+    deviceId,
+    videoStreamFailed,
+    displayMode,
+    isVisible,
+    isCollapsed,
+    isTaskActive,
+  ]);
 
   const getReasonMessage = (reason: string): string => {
     const messages: Record<string, string> = {
@@ -259,51 +299,12 @@ export function DeviceMonitor({
     typeof panelWidth === 'number' ? `${panelWidth}px` : 'auto';
 
   if (isCollapsed) {
-    return (
-      <Card
-        className={`flex-shrink-0 relative overflow-hidden bg-background ${className}`}
-        style={{ width: '56px', minWidth: '56px', maxWidth: '56px' }}
-      >
-        <div className="flex h-full min-h-[240px] flex-col items-center justify-between py-4">
-          <Button
-            variant="ghost"
-            size="icon"
-            onClick={() => setIsCollapsed(false)}
-            className="h-8 w-8 rounded-full bg-popover/90 backdrop-blur border border-border shadow-lg hover:bg-accent"
-            title="Expand monitor"
-          >
-            <ChevronLeft className="w-4 h-4" />
-          </Button>
-
-          <div className="flex flex-col items-center gap-3 text-muted-foreground">
-            {displayMode === 'live' ? (
-              <MonitorPlay className="w-4 h-4" />
-            ) : displayMode === 'video' ? (
-              <Video className="w-4 h-4" />
-            ) : (
-              <ImageIcon className="w-4 h-4" />
-            )}
-            <Badge
-              variant="secondary"
-              className="rotate-90 origin-center whitespace-nowrap px-2 py-0.5 text-[10px]"
-            >
-              {displayMode === 'live'
-                ? 'Live'
-                : displayMode === 'video'
-                  ? 'Video'
-                  : 'Image'}
-            </Badge>
-          </div>
-
-          <div className="h-8 w-8" />
-        </div>
-      </Card>
-    );
+    return null;
   }
 
   return (
     <Card
-      className={`flex-shrink-0 relative min-h-0 overflow-hidden bg-background ${className}`}
+      className={`relative min-h-0 flex-shrink-0 overflow-hidden bg-background ${className}`}
       style={{
         width: widthStyle,
         minWidth: typeof panelWidth === 'number' ? undefined : '240px',
@@ -316,8 +317,9 @@ export function DeviceMonitor({
       {typeof panelWidth === 'number' && (
         <ResizableHandle
           onResize={handleResize}
-          minWidth={240}
+          minWidth={0}
           maxWidth={640}
+          side="left"
           className="z-20"
         />
       )}
@@ -337,7 +339,7 @@ export function DeviceMonitor({
             }`}
           >
             {/* Display mode controls */}
-            <div className="flex items-center gap-1 bg-popover/90 backdrop-blur rounded-xl p-1 shadow-lg border border-border">
+            <div className="flex items-center gap-1 rounded-xl border border-border bg-background p-1">
               {!isRemoteDevice && (
                 <Button
                   variant="ghost"
@@ -409,7 +411,7 @@ export function DeviceMonitor({
             variant="ghost"
             size="icon"
             onClick={toggleControls}
-            className="h-8 w-8 rounded-full bg-popover/90 backdrop-blur border border-border shadow-lg hover:bg-accent"
+            className="h-8 w-8 rounded-full border border-border bg-background hover:bg-accent"
             title={showControls ? 'Hide controls' : 'Show controls'}
           >
             {showControls ? (
@@ -417,15 +419,6 @@ export function DeviceMonitor({
             ) : (
               <ChevronLeft className="w-4 h-4" />
             )}
-          </Button>
-          <Button
-            variant="ghost"
-            size="icon"
-            onClick={() => setIsCollapsed(true)}
-            className="h-8 w-8 rounded-full bg-popover/90 backdrop-blur border border-border shadow-lg hover:bg-accent"
-            title="Collapse monitor"
-          >
-            <ChevronRight className="w-4 h-4" />
           </Button>
         </div>
       </div>
@@ -592,10 +585,25 @@ export function DeviceMonitor({
             </div>
           ) : (
             <div className="text-center text-muted-foreground">
-              <Loader2 className="w-8 h-8 mx-auto mb-2 animate-spin" />
-              <p className="text-sm">
-                {t.devicePanel?.loading || 'Loading...'}
-              </p>
+              {isTaskActive ? (
+                <>
+                  <Loader2 className="w-8 h-8 mx-auto mb-2 animate-spin" />
+                  <p className="text-sm">
+                    {t.devicePanel?.loading || 'Loading...'}
+                  </p>
+                </>
+              ) : (
+                <>
+                  <ImageIcon className="mx-auto mb-2 h-8 w-8 opacity-50" />
+                  <p className="text-sm">
+                    {t.devicePanel?.readyToHelp || 'Ready to help'}
+                  </p>
+                  <p className="mt-1 text-xs opacity-70">
+                    {t.devicePanel?.describeTask ||
+                      'Start a task to refresh the device preview.'}
+                  </p>
+                </>
+              )}
             </div>
           )}
         </div>

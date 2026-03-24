@@ -1,17 +1,19 @@
 ﻿import * as React from 'react';
 import { Card } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
-import { Textarea } from '@/components/ui/textarea';
 import { Badge } from '@/components/ui/badge';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { useTranslation } from '../lib/i18n-context';
 import { DeviceMonitor } from './DeviceMonitor';
+import { ChatComposer } from './ChatComposer';
 import {
   AlertCircle,
   CheckCircle2,
   Loader2,
   Send,
   RotateCcw,
+  ChevronLeft,
+  ChevronRight,
   Layers,
   MessageSquare,
   Wrench,
@@ -44,6 +46,7 @@ import {
   TooltipTrigger,
 } from '@/components/ui/tooltip';
 import { HistoryItemCard } from './HistoryItemCard';
+import { useLocalStorage } from '../hooks/useLocalStorage';
 
 interface ChatKitPanelProps {
   deviceId: string;
@@ -76,6 +79,55 @@ interface Message {
   success?: boolean;
 }
 
+interface CachedExecutionStep extends Omit<ExecutionStep, 'timestamp'> {
+  timestamp: string;
+}
+
+interface CachedMessage extends Omit<Message, 'timestamp' | 'steps' | 'isStreaming'> {
+  timestamp: string;
+  steps?: CachedExecutionStep[];
+}
+
+interface CachedChatKitState {
+  input: string;
+  error: string | null;
+  messages: CachedMessage[];
+}
+
+function serializeStepForCache(step: ExecutionStep): CachedExecutionStep {
+  return {
+    ...step,
+    timestamp: step.timestamp.toISOString(),
+  };
+}
+
+function deserializeStepFromCache(step: CachedExecutionStep): ExecutionStep {
+  return {
+    ...step,
+    timestamp: new Date(step.timestamp),
+  };
+}
+
+function serializeMessageForCache(message: Message): CachedMessage {
+  return {
+    id: message.id,
+    role: message.role,
+    content: message.content,
+    timestamp: message.timestamp.toISOString(),
+    steps: message.steps?.map(serializeStepForCache),
+    success: message.success,
+  };
+}
+
+function deserializeMessageFromCache(message: CachedMessage): Message {
+  return {
+    ...message,
+    timestamp: new Date(message.timestamp),
+    steps: message.steps?.map(deserializeStepFromCache),
+    isStreaming: false,
+  };
+}
+
 export function ChatKitPanel({
   deviceId,
   deviceSerial,
@@ -91,8 +143,12 @@ export function ChatKitPanel({
   const [loading, setLoading] = React.useState(false);
   const [aborting, setAborting] = React.useState(false);
   const [error, setError] = React.useState<string | null>(null);
+  const [isCacheHydrated, setIsCacheHydrated] = React.useState(false);
+  const [isMonitorCollapsed, setIsMonitorCollapsed] =
+    useLocalStorage<boolean>('device-monitor-collapsed', true);
   const messagesEndRef = React.useRef<HTMLDivElement>(null);
   const abortControllerRef = React.useRef<{ close: () => void } | null>(null);
+  const chatCacheKey = `novaper:chat:chatkit:${deviceSerial || deviceId}`;
 
   // Workflow state
   const [workflows, setWorkflows] = React.useState<Workflow[]>([]);
@@ -115,6 +171,67 @@ export function ChatKitPanel({
     },
     []
   );
+
+  React.useEffect(() => {
+    setIsCacheHydrated(false);
+
+    if (typeof window === 'undefined') {
+      setIsCacheHydrated(true);
+      return;
+    }
+
+    try {
+      const raw = window.localStorage.getItem(chatCacheKey);
+      if (!raw) {
+        setMessages([]);
+        setInput('');
+        setError(null);
+        setLoading(false);
+        setAborting(false);
+        setIsCacheHydrated(true);
+        return;
+      }
+
+      const parsed = JSON.parse(raw) as CachedChatKitState;
+      const restoredMessages = Array.isArray(parsed.messages)
+        ? parsed.messages.map(deserializeMessageFromCache)
+        : [];
+
+      setMessages(restoredMessages);
+      setInput(typeof parsed.input === 'string' ? parsed.input : '');
+      setError(typeof parsed.error === 'string' ? parsed.error : null);
+      setLoading(false);
+      setAborting(false);
+    } catch (error) {
+      console.error('Failed to restore chat cache:', error);
+      setMessages([]);
+      setInput('');
+      setError(null);
+      setLoading(false);
+      setAborting(false);
+    } finally {
+      setIsCacheHydrated(true);
+    }
+  }, [chatCacheKey]);
+
+  React.useEffect(() => {
+    if (!isCacheHydrated || typeof window === 'undefined') {
+      return;
+    }
+
+    if (messages.length === 0 && !input && !error) {
+      window.localStorage.removeItem(chatCacheKey);
+      return;
+    }
+
+    const cachedState: CachedChatKitState = {
+      input,
+      error,
+      messages: messages.map(serializeMessageForCache),
+    };
+
+    window.localStorage.setItem(chatCacheKey, JSON.stringify(cachedState));
+  }, [chatCacheKey, error, input, isCacheHydrated, messages]);
 
   // Load workflows
   React.useEffect(() => {
@@ -354,28 +471,22 @@ export function ChatKitPanel({
     }
     setMessages([]);
     setError(null);
+    if (typeof window !== 'undefined') {
+      window.localStorage.removeItem(chatCacheKey);
+    }
     try {
       await resetLayeredAgentSession(deviceId);
     } catch (e) {
       console.warn('Failed to reset backend session:', e);
     }
-  }, [deviceId]);
-
-  const handleInputKeyDown = (
-    event: React.KeyboardEvent<HTMLTextAreaElement>
-  ) => {
-    if ((event.metaKey || event.ctrlKey) && event.key === 'Enter') {
-      event.preventDefault();
-      handleSend();
-    }
-  };
+  }, [chatCacheKey, deviceId]);
 
   return (
-    <div className="flex-1 flex gap-4 p-4 items-stretch justify-center min-h-0">
+    <div className="flex min-h-0 flex-1 items-stretch justify-center gap-3 p-3 md:gap-4 md:p-4 xl:gap-5">
       {/* Chat Area with Execution Steps */}
-      <Card className="flex-1 flex flex-col min-h-0 max-w-2xl overflow-hidden">
+      <Card className="flex min-h-0 min-w-0 flex-[1_1_0%] flex-col overflow-hidden border-0 bg-white shadow-none dark:bg-slate-950">
         {/* Header */}
-        <div className="flex items-center justify-between p-4 border-b border-slate-200 dark:border-slate-800">
+        <div className="flex items-center justify-between p-4">
           <div className="flex items-center gap-3">
             <div className="flex h-10 w-10 items-center justify-center rounded-full bg-purple-500/10">
               <Layers className="h-5 w-5 text-purple-500" />
@@ -477,6 +588,20 @@ export function ChatKitPanel({
               title="重置对话"
             >
               <RotateCcw className="h-4 w-4" />
+            </Button>
+            <Button
+              variant="ghost"
+              size="icon"
+              onClick={() => setIsMonitorCollapsed(prev => !prev)}
+              className="h-8 w-8 rounded-full text-slate-400 hover:text-slate-600 dark:text-slate-500 dark:hover:text-slate-300"
+              title={isMonitorCollapsed ? 'Show device monitor' : 'Hide device monitor'}
+              aria-label={isMonitorCollapsed ? 'Show device monitor' : 'Hide device monitor'}
+            >
+              {isMonitorCollapsed ? (
+                <ChevronLeft className="h-4 w-4" />
+              ) : (
+                <ChevronRight className="h-4 w-4" />
+              )}
             </Button>
           </div>
         </div>
@@ -671,19 +796,19 @@ export function ChatKitPanel({
         </ScrollArea>
 
         {/* Input area */}
-        <div className="p-4 border-t border-slate-200 dark:border-slate-800">
-          <div className="flex items-end gap-3">
-            <Textarea
-              value={input}
-              onChange={e => setInput(e.target.value)}
-              onKeyDown={handleInputKeyDown}
-              placeholder="描述你想要完成的任务... (Cmd+Enter 发送)"
-              disabled={loading}
-              className="flex-1 min-h-[40px] max-h-[120px] resize-none"
-              rows={1}
-            />
-            {/* Workflow Quick Run Button */}
-            <Tooltip>
+        <div className="bg-slate-50/60 p-0 dark:bg-slate-950/40">
+          <ChatComposer
+            value={input}
+            onChange={setInput}
+            onSubmit={() => void handleSend()}
+            placeholder="描述你想要完成的任务..."
+            disabled={loading}
+            className="w-full border-slate-200/80 bg-white dark:border-slate-800/80 dark:bg-slate-900"
+            compactMaxHeight={200}
+            expandedMaxHeight={460}
+            storageKey="layered-chat-composer"
+            footerStart={
+              <Tooltip>
               <TooltipTrigger asChild>
                 <Popover
                   open={showWorkflowPopover}
@@ -692,10 +817,10 @@ export function ChatKitPanel({
                   <PopoverTrigger asChild>
                     <Button
                       variant="outline"
-                      size="icon"
-                      className="h-10 w-10 flex-shrink-0"
+                      size="icon-sm"
+                      className="rounded-full"
                     >
-                      <ListChecks className="w-4 h-4" />
+                      <ListChecks className="h-4 w-4" />
                     </Button>
                   </PopoverTrigger>
                   <PopoverContent align="start" className="w-72 p-3">
@@ -753,45 +878,50 @@ export function ChatKitPanel({
                   </p>
                 </div>
               </TooltipContent>
-            </Tooltip>
-            {/* Abort Button - shown when loading */}
-            {loading && (
-              <Button
-                onClick={handleAbort}
-                disabled={aborting}
-                size="icon"
-                variant="destructive"
-                className="h-10 w-10 rounded-full flex-shrink-0"
-                title={t.chat?.abortChat || '中断任务'}
-              >
-                {aborting ? (
-                  <Loader2 className="h-4 w-4 animate-spin" />
-                ) : (
-                  <Square className="h-4 w-4" />
-                )}
-              </Button>
-            )}
-            {/* Send Button */}
-            {!loading && (
-              <Button
-                onClick={handleSend}
-                disabled={!input.trim()}
-                size="icon"
-                className="h-10 w-10 rounded-full flex-shrink-0 bg-purple-600 hover:bg-purple-700"
-              >
-                <Send className="h-4 w-4" />
-              </Button>
-            )}
-          </div>
+              </Tooltip>
+            }
+            footerEnd={
+              loading ? (
+                <Button
+                  onClick={() => void handleAbort()}
+                  disabled={aborting}
+                  size="icon"
+                  variant="destructive"
+                  className="h-10 w-10 rounded-full"
+                  title={t.chat?.abortChat || '中断任务'}
+                >
+                  {aborting ? (
+                    <Loader2 className="h-4 w-4 animate-spin" />
+                  ) : (
+                    <Square className="h-4 w-4" />
+                  )}
+                </Button>
+              ) : (
+                <Button
+                  onClick={() => void handleSend()}
+                  disabled={!input.trim()}
+                  size="icon"
+                  className="h-10 w-10 rounded-full bg-purple-600 hover:bg-purple-700"
+                >
+                  <Send className="h-4 w-4" />
+                </Button>
+              )
+            }
+          />
         </div>
       </Card>
 
+      {!isMonitorCollapsed ? (
       <DeviceMonitor
         deviceId={deviceId}
         serial={deviceSerial}
         connectionType={deviceConnectionType}
+        isTaskActive={loading}
         isVisible={isVisible}
+        isCollapsed={isMonitorCollapsed}
+        onCollapsedChange={setIsMonitorCollapsed}
       />
+      ) : null}
     </div>
   );
 }

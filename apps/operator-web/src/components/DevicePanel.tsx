@@ -2,6 +2,8 @@ import React, { useRef, useEffect, useCallback, useState } from 'react';
 import {
   Send,
   RotateCcw,
+  ChevronLeft,
+  ChevronRight,
   CheckCircle2,
   AlertCircle,
   Loader2,
@@ -31,7 +33,6 @@ import {
   deleteHistoryRecord,
 } from '../api';
 import { Button } from '@/components/ui/button';
-import { Textarea } from '@/components/ui/textarea';
 import { Badge } from '@/components/ui/badge';
 import { Card } from '@/components/ui/card';
 import {
@@ -41,6 +42,8 @@ import {
 } from '@/components/ui/popover';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { useTranslation } from '../lib/i18n-context';
+import { ChatComposer } from './ChatComposer';
+import { useLocalStorage } from '../hooks/useLocalStorage';
 import { HistoryItemCard } from './HistoryItemCard';
 import {
   Tooltip,
@@ -69,6 +72,17 @@ interface Message {
   screenshots?: (string | undefined)[];
   isStreaming?: boolean;
   currentThinking?: string; // Current thinking text being streamed
+}
+
+interface CachedMessage
+  extends Omit<Message, 'timestamp' | 'screenshots' | 'isStreaming'> {
+  timestamp: string;
+}
+
+interface CachedDevicePanelState {
+  input: string;
+  error: string | null;
+  messages: CachedMessage[];
 }
 
 interface DevicePanelProps {
@@ -109,6 +123,48 @@ function getStepSummary(thinking: string | undefined, action: unknown): string {
   return 'Action executed';
 }
 
+function getMessageSignature(message: Message | undefined): string | null {
+  if (!message) {
+    return null;
+  }
+
+  const thinkingSignature = message.thinking
+    ? JSON.stringify(message.thinking).length
+    : 0;
+
+  return [
+    message.id,
+    message.content?.length ?? 0,
+    message.currentThinking?.length ?? 0,
+    thinkingSignature,
+    message.steps ?? '',
+    message.isStreaming ? 1 : 0,
+  ].join('|');
+}
+
+function serializeMessageForCache(message: Message): CachedMessage {
+  return {
+    id: message.id,
+    role: message.role,
+    content: message.content,
+    timestamp: message.timestamp.toISOString(),
+    steps: message.steps,
+    success: message.success,
+    thinking: message.thinking,
+    actions: message.actions,
+    currentThinking: message.currentThinking,
+  };
+}
+
+function deserializeMessageFromCache(message: CachedMessage): Message {
+  return {
+    ...message,
+    timestamp: new Date(message.timestamp),
+    isStreaming: false,
+    screenshots: undefined,
+  };
+}
+
 export function DevicePanel({
   deviceId,
   deviceSerial,
@@ -139,6 +195,12 @@ export function DevicePanel({
   const prevMessageSigRef = useRef<string | null>(null);
   const [isAtBottom, setIsAtBottom] = useState(true);
   const [showNewMessageNotice, setShowNewMessageNotice] = useState(false);
+  const [isCacheHydrated, setIsCacheHydrated] = useState(false);
+  const chatCacheKey = `novaper:chat:classic:${deviceSerial || deviceId}`;
+  const [isMonitorCollapsed, setIsMonitorCollapsed] = useLocalStorage<boolean>(
+    'device-monitor-collapsed',
+    true
+  );
 
   // Create throttled scroll handler ref that persists across renders
   const throttledUpdateScrollStateRef = useRef(
@@ -173,6 +235,81 @@ export function DevicePanel({
   // Agent 会在首次发送消息时自动初始化
 
   // ✅ 移除自动初始化 useEffect，不再需要
+
+  useEffect(() => {
+    setIsCacheHydrated(false);
+
+    if (typeof window === 'undefined') {
+      setIsCacheHydrated(true);
+      return;
+    }
+
+    try {
+      const raw = window.localStorage.getItem(chatCacheKey);
+      if (!raw) {
+        setMessages([]);
+        setInput('');
+        setError(null);
+        prevMessageCountRef.current = 0;
+        prevMessageSigRef.current = null;
+        setIsAtBottom(true);
+        setShowNewMessageNotice(false);
+        setLoading(false);
+        setAborting(false);
+        setIsCacheHydrated(true);
+        return;
+      }
+
+      const parsed = JSON.parse(raw) as CachedDevicePanelState;
+      const restoredMessages = Array.isArray(parsed.messages)
+        ? parsed.messages.map(deserializeMessageFromCache)
+        : [];
+
+      setMessages(restoredMessages);
+      setInput(typeof parsed.input === 'string' ? parsed.input : '');
+      setError(typeof parsed.error === 'string' ? parsed.error : null);
+      prevMessageCountRef.current = restoredMessages.length;
+      prevMessageSigRef.current = getMessageSignature(
+        restoredMessages[restoredMessages.length - 1]
+      );
+      setIsAtBottom(true);
+      setShowNewMessageNotice(false);
+      setLoading(false);
+      setAborting(false);
+    } catch (error) {
+      console.error('Failed to restore chat cache:', error);
+      setMessages([]);
+      setInput('');
+      setError(null);
+      prevMessageCountRef.current = 0;
+      prevMessageSigRef.current = null;
+      setIsAtBottom(true);
+      setShowNewMessageNotice(false);
+      setLoading(false);
+      setAborting(false);
+    } finally {
+      setIsCacheHydrated(true);
+    }
+  }, [chatCacheKey]);
+
+  useEffect(() => {
+    if (!isCacheHydrated || typeof window === 'undefined') {
+      return;
+    }
+
+    if (messages.length === 0 && !input && !error) {
+      window.localStorage.removeItem(chatCacheKey);
+      return;
+    }
+
+    const cachedState: CachedDevicePanelState = {
+      input,
+      error,
+      messages: messages.map(serializeMessageForCache),
+    };
+
+    window.localStorage.setItem(chatCacheKey, JSON.stringify(cachedState));
+  }, [chatCacheKey, error, input, isCacheHydrated, messages]);
 
   // Load history items when popover opens
   useEffect(() => {
@@ -248,14 +385,7 @@ export function DevicePanel({
 
     // Reset previous message tracking refs to match the loaded history
     prevMessageCountRef.current = newMessages.length;
-    prevMessageSigRef.current = [
-      agentMessage.id,
-      agentMessage.content?.length ?? 0,
-      agentMessage.currentThinking?.length ?? 0,
-      agentMessage.thinking ? JSON.stringify(agentMessage.thinking).length : 0,
-      agentMessage.steps ?? '',
-      agentMessage.isStreaming ? 1 : 0,
-    ].join('|');
+    prevMessageSigRef.current = getMessageSignature(agentMessage);
 
     setShowNewMessageNotice(false);
     setIsAtBottom(true);
@@ -494,9 +624,12 @@ export function DevicePanel({
     chatStreamRef.current = null;
     prevMessageCountRef.current = 0;
     prevMessageSigRef.current = null;
+    if (typeof window !== 'undefined') {
+      window.localStorage.removeItem(chatCacheKey);
+    }
 
     await resetChat(deviceId);
-  }, [deviceId]);
+  }, [chatCacheKey, deviceId]);
 
   const handleAbortChat = useCallback(async () => {
     if (!chatStreamRef.current) return;
@@ -549,19 +682,7 @@ export function DevicePanel({
 
   useEffect(() => {
     const latest = messages[messages.length - 1];
-    const thinkingSignature = latest?.thinking
-      ? JSON.stringify(latest.thinking).length
-      : 0;
-    const latestSignature = latest
-      ? [
-          latest.id,
-          latest.content?.length ?? 0,
-          latest.currentThinking?.length ?? 0,
-          thinkingSignature,
-          latest.steps ?? '',
-          latest.isStreaming ? 1 : 0,
-        ].join('|')
-      : null;
+    const latestSignature = getMessageSignature(latest);
 
     const isNewMessage = messages.length > prevMessageCountRef.current;
     const hasLatestChanged =
@@ -624,21 +745,12 @@ export function DevicePanel({
     setIsAtBottom(true);
   };
 
-  const handleInputKeyDown = (
-    event: React.KeyboardEvent<HTMLTextAreaElement>
-  ) => {
-    if ((event.metaKey || event.ctrlKey) && event.key === 'Enter') {
-      event.preventDefault();
-      handleSend();
-    }
-  };
-
   return (
-    <div className="flex-1 flex gap-4 p-4 items-stretch justify-center min-h-0">
+    <div className="flex min-h-0 flex-1 items-stretch justify-center gap-3 p-3 md:gap-4 md:p-4 xl:gap-5">
       {/* Chat area - takes remaining space */}
-      <Card className="flex-1 flex flex-col min-h-0 max-w-2xl">
+      <Card className="flex min-h-0 min-w-0 flex-[1_1_0%] flex-col overflow-hidden border-0 bg-white shadow-none dark:bg-slate-950">
         {/* Header */}
-        <div className="flex items-center justify-between p-4 border-b border-slate-200 dark:border-slate-800">
+        <div className="flex items-center justify-between p-4">
           <div className="flex items-center gap-3">
             <div className="flex h-10 w-10 items-center justify-center rounded-full bg-[#1d9bf0]/10">
               <Sparkles className="h-5 w-5 text-[#1d9bf0]" />
@@ -743,6 +855,20 @@ export function DevicePanel({
             >
               <RotateCcw className="h-4 w-4" />
             </Button>
+            <Button
+              variant="ghost"
+              size="icon"
+              onClick={() => setIsMonitorCollapsed(prev => !prev)}
+              className="h-8 w-8 rounded-full text-slate-400 hover:text-slate-600 dark:text-slate-500 dark:hover:text-slate-300"
+              title={isMonitorCollapsed ? 'Show device monitor' : 'Hide device monitor'}
+              aria-label={isMonitorCollapsed ? 'Show device monitor' : 'Hide device monitor'}
+            >
+              {isMonitorCollapsed ? (
+                <ChevronLeft className="h-4 w-4" />
+              ) : (
+                <ChevronRight className="h-4 w-4" />
+              )}
+            </Button>
           </div>
         </div>
 
@@ -757,7 +883,7 @@ export function DevicePanel({
         {/* Messages */}
         <div className="flex-1 min-h-0 relative">
           <div
-            className="h-full overflow-y-auto p-4"
+            className="h-full overflow-y-auto px-4 py-4 sm:px-5"
             ref={messagesContainerRef}
             onScroll={handleMessagesScroll}
           >
@@ -1031,23 +1157,23 @@ export function DevicePanel({
         </div>
 
         {/* Input area */}
-        <div className="p-4 border-t border-slate-200 dark:border-slate-800">
-          <div className="flex items-end gap-3">
-            <Textarea
-              value={input}
-              onChange={e => setInput(e.target.value)}
-              onKeyDown={handleInputKeyDown}
-              placeholder={
-                !isConfigured
-                  ? t.devicePanel.configureFirst
-                  : t.devicePanel.whatToDo
-              }
-              disabled={loading}
-              className="flex-1 min-h-[40px] max-h-[120px] resize-none"
-              rows={1}
-            />
-            {/* Workflow Quick Run Button */}
-            <Tooltip>
+        <div className="bg-slate-50/60 p-0 dark:bg-slate-950/40">
+          <ChatComposer
+            value={input}
+            onChange={setInput}
+            onSubmit={() => void handleSend()}
+            placeholder={
+              !isConfigured
+                ? t.devicePanel.configureFirst
+                : t.devicePanel.whatToDo
+            }
+            disabled={loading}
+            className="w-full border-slate-200/80 bg-white dark:border-slate-800/80 dark:bg-slate-900"
+            compactMaxHeight={200}
+            expandedMaxHeight={460}
+            storageKey="classic-chat-composer"
+            footerStart={
+              <Tooltip>
               <TooltipTrigger asChild>
                 <Popover
                   open={showWorkflowPopover}
@@ -1056,10 +1182,10 @@ export function DevicePanel({
                   <PopoverTrigger asChild>
                     <Button
                       variant="outline"
-                      size="icon"
-                      className="h-10 w-10 flex-shrink-0"
+                      size="icon-sm"
+                      className="rounded-full"
                     >
-                      <ListChecks className="w-4 h-4" />
+                      <ListChecks className="h-4 w-4" />
                     </Button>
                   </PopoverTrigger>
                   <PopoverContent align="start" className="w-72 p-3">
@@ -1115,46 +1241,51 @@ export function DevicePanel({
                   </p>
                 </div>
               </TooltipContent>
-            </Tooltip>
-            {/* Abort Button - shown when loading */}
-            {loading && (
-              <Button
-                onClick={handleAbortChat}
-                disabled={aborting}
-                size="icon"
-                variant="destructive"
-                className="h-10 w-10 rounded-full flex-shrink-0"
-                title={t.chat.abortChat}
-              >
-                {aborting ? (
-                  <Loader2 className="h-4 w-4 animate-spin" />
-                ) : (
-                  <Square className="h-4 w-4" />
-                )}
-              </Button>
-            )}
-            {/* Send Button */}
-            {!loading && (
-              <Button
-                onClick={handleSend}
-                disabled={!input.trim()}
-                size="icon"
-                variant="twitter"
-                className="h-10 w-10 rounded-full flex-shrink-0"
-              >
-                <Send className="h-4 w-4" />
-              </Button>
-            )}
-          </div>
+              </Tooltip>
+            }
+            footerEnd={
+              loading ? (
+                <Button
+                  onClick={() => void handleAbortChat()}
+                  disabled={aborting}
+                  size="icon"
+                  variant="destructive"
+                  className="h-10 w-10 rounded-full"
+                  title={t.chat.abortChat}
+                >
+                  {aborting ? (
+                    <Loader2 className="h-4 w-4 animate-spin" />
+                  ) : (
+                    <Square className="h-4 w-4" />
+                  )}
+                </Button>
+              ) : (
+                <Button
+                  onClick={() => void handleSend()}
+                  disabled={!input.trim()}
+                  size="icon"
+                  variant="twitter"
+                  className="h-10 w-10 rounded-full"
+                >
+                  <Send className="h-4 w-4" />
+                </Button>
+              )
+            }
+          />
         </div>
       </Card>
 
-      <DeviceMonitor
+      {!isMonitorCollapsed ? (
+        <DeviceMonitor
         deviceId={deviceId}
         serial={deviceSerial}
         connectionType={deviceConnectionType}
+        isTaskActive={loading}
+        isCollapsed={isMonitorCollapsed}
+        onCollapsedChange={setIsMonitorCollapsed}
         isVisible={isVisible} // ✅ 修改：传递实际的 isVisible（原为硬编码 true）
       />
+      ) : null}
     </div>
   );
 }

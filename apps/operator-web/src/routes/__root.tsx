@@ -4,7 +4,8 @@ import { TanStackRouterDevtools } from '@tanstack/react-router-devtools';
 import { getStatus, checkVersion, type VersionCheckResponse } from '../api';
 import { Separator } from '@/components/ui/separator';
 import { Badge } from '@/components/ui/badge';
-import { Github, Globe } from 'lucide-react';
+import { Button } from '@/components/ui/button';
+import { Github, Globe, Menu } from 'lucide-react';
 import { useLocale, useTranslation } from '../lib/i18n-context';
 import { ThemeToggle } from '../components/ThemeToggle';
 import { NavigationSidebar } from '../components/NavigationSidebar';
@@ -177,9 +178,27 @@ function Footer() {
 }
 
 function RootComponent() {
+  const toggleNavigation = () => {
+    window.dispatchEvent(new CustomEvent('novaper:toggle-navigation'));
+  };
+
   return (
     <div className="h-screen flex flex-col overflow-hidden">
-      <div className="flex-1 flex overflow-hidden">
+      <div className="flex h-12 items-center border-b border-slate-200 bg-white px-3 dark:border-slate-800 dark:bg-slate-950">
+        <Button
+          type="button"
+          variant="ghost"
+          size="icon-sm"
+          onClick={toggleNavigation}
+          className="h-9 w-9 rounded-full"
+          title="Toggle navigation"
+          aria-label="Toggle navigation"
+        >
+          <Menu className="h-4 w-4" />
+        </Button>
+      </div>
+
+      <div className="relative flex-1 flex overflow-hidden">
         <NavigationSidebar />
         <div className="flex-1 flex flex-col overflow-hidden">
           <div className="flex-1 overflow-auto">

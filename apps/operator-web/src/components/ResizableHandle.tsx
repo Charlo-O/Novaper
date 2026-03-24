@@ -6,6 +6,7 @@ interface ResizableHandleProps {
   onResizeEnd?: () => void;
   minWidth?: number;
   maxWidth?: number;
+  side?: 'left' | 'right';
   className?: string;
 }
 
@@ -15,6 +16,7 @@ export function ResizableHandle({
   onResizeEnd,
   minWidth = 240,
   maxWidth = 640,
+  side = 'right',
   className = '',
 }: ResizableHandleProps) {
   const [isDragging, setIsDragging] = useState(false);
@@ -41,7 +43,8 @@ export function ResizableHandle({
     if (!isDragging) return;
 
     const handleMouseMove = (e: MouseEvent) => {
-      const deltaX = e.clientX - startX.current;
+      const movement = e.clientX - startX.current;
+      const deltaX = side === 'left' ? -movement : movement;
       const newWidth = Math.min(
         maxWidth,
         Math.max(minWidth, startWidth.current + deltaX)
@@ -67,9 +70,9 @@ export function ResizableHandle({
   return (
     <div
       ref={containerRef}
-      className={`absolute left-0 top-0 bottom-0 w-1 cursor-col-resize hover:bg-primary/50 active:bg-primary transition-colors group ${
+      className={`absolute top-0 bottom-0 w-1 cursor-col-resize hover:bg-primary/50 active:bg-primary transition-colors group ${
         isDragging ? 'bg-primary' : ''
-      } ${className}`}
+      } ${side === 'left' ? 'left-0' : 'right-0'} ${className}`}
       onMouseDown={handleMouseDown}
     >
       {/* Visual indicator on hover */}

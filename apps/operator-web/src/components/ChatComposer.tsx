@@ -16,6 +16,7 @@ interface ChatComposerProps {
   minRows?: number;
   compactMaxHeight?: number;
   expandedMaxHeight?: number;
+  storageKey?: string;
 }
 
 export function ChatComposer({
@@ -31,20 +32,71 @@ export function ChatComposer({
   minRows = 1,
   compactMaxHeight = 168,
   expandedMaxHeight = 320,
+  storageKey,
 }: ChatComposerProps) {
   const textareaRef = React.useRef<HTMLTextAreaElement>(null);
   const [isExpanded, setIsExpanded] = React.useState(false);
+  const resolvedMinHeight = Math.max(minRows * 28, 52);
+  const resolvedExpandedMinHeight = Math.min(
+    expandedMaxHeight,
+    Math.max(compactMaxHeight, 220)
+  );
+
+  React.useEffect(() => {
+    if (!storageKey || typeof window === 'undefined') {
+      return;
+    }
+
+    try {
+      const raw = window.localStorage.getItem(storageKey);
+      if (!raw) {
+        return;
+      }
+
+      const parsed = JSON.parse(raw) as {
+        isExpanded?: boolean;
+      };
+
+      if (typeof parsed.isExpanded === 'boolean') {
+        setIsExpanded(parsed.isExpanded);
+      }
+    } catch {
+      // Ignore invalid persisted composer state.
+    }
+  }, [storageKey]);
+
+  React.useEffect(() => {
+    if (!storageKey || typeof window === 'undefined') {
+      return;
+    }
+
+    window.localStorage.setItem(
+      storageKey,
+      JSON.stringify({
+        isExpanded,
+      })
+    );
+  }, [isExpanded, storageKey]);
 
   React.useLayoutEffect(() => {
     const textarea = textareaRef.current;
     if (!textarea) return;
 
     const maxHeight = isExpanded ? expandedMaxHeight : compactMaxHeight;
+    const minHeight = isExpanded ? resolvedExpandedMinHeight : resolvedMinHeight;
     textarea.style.height = '0px';
-    const nextHeight = Math.min(textarea.scrollHeight, maxHeight);
-    textarea.style.height = `${Math.max(nextHeight, minRows * 28)}px`;
+    const contentHeight = textarea.scrollHeight;
+    const nextHeight = Math.min(Math.max(contentHeight, minHeight), maxHeight);
+    textarea.style.height = `${nextHeight}px`;
     textarea.style.overflowY = textarea.scrollHeight > maxHeight ? 'auto' : 'hidden';
-  }, [value, isExpanded, compactMaxHeight, expandedMaxHeight, minRows]);
+  }, [
+    value,
+    isExpanded,
+    compactMaxHeight,
+    expandedMaxHeight,
+    resolvedExpandedMinHeight,
+    resolvedMinHeight,
+  ]);
 
   const handleKeyDown = (event: React.KeyboardEvent<HTMLTextAreaElement>) => {
     if ((event.metaKey || event.ctrlKey) && event.key === 'Enter') {
@@ -53,11 +105,19 @@ export function ChatComposer({
     }
   };
 
+  const handleToggleExpand = () => {
+    if (isExpanded) {
+      setIsExpanded(false);
+      return;
+    }
+
+    setIsExpanded(true);
+  };
+
   return (
     <div
       className={cn(
-        'rounded-[28px] border border-border/70 bg-card/90 shadow-[0_24px_70px_-36px_rgba(15,23,42,0.4)] backdrop-blur-xl',
-        'before:pointer-events-none before:absolute before:inset-x-6 before:top-0 before:h-px before:bg-gradient-to-r before:from-transparent before:via-white/60 before:to-transparent',
+        'rounded-[28px] border border-border/70 bg-card',
         'relative overflow-hidden',
         className
       )}
@@ -76,14 +136,16 @@ export function ChatComposer({
             'focus:outline-none focus:ring-0'
           )}
           style={{
-            minHeight: `${Math.max(minRows * 28, 44)}px`,
+            minHeight: `${isExpanded ? resolvedExpandedMinHeight : resolvedMinHeight}px`,
             maxHeight: `${isExpanded ? expandedMaxHeight : compactMaxHeight}px`,
           }}
         />
       </div>
 
-      <div className="flex flex-wrap items-center gap-1.5 px-3 pb-3 pt-2 sm:px-4 sm:pb-3">
-        <div className="flex min-w-0 flex-1 items-center gap-1.5">{footerStart}</div>
+      <div className="flex flex-wrap items-center gap-2 px-3 pb-3 pt-2 sm:px-4 sm:pb-3">
+        <div className="flex min-w-0 flex-1 flex-wrap items-center gap-1.5">
+          {footerStart}
+        </div>
 
         <div className="ml-auto flex items-center gap-1.5">
           <span className="hidden text-[11px] text-muted-foreground sm:inline">
@@ -93,7 +155,7 @@ export function ChatComposer({
             type="button"
             variant="ghost"
             size="icon-sm"
-            onClick={() => setIsExpanded(prev => !prev)}
+            onClick={handleToggleExpand}
             className="h-8 w-8 rounded-full text-muted-foreground hover:text-foreground"
             aria-label={isExpanded ? 'Collapse composer' : 'Expand composer'}
             title={isExpanded ? 'Collapse composer' : 'Expand composer'}
