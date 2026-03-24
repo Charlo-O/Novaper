@@ -13,9 +13,11 @@ import { Route as WorkflowsRouteImport } from './routes/workflows'
 import { Route as SettingsRouteImport } from './routes/settings'
 import { Route as ScheduledTasksRouteImport } from './routes/scheduled-tasks'
 import { Route as PluginsRouteImport } from './routes/plugins'
+import { Route as MobileRouteImport } from './routes/mobile'
 import { Route as LogsRouteImport } from './routes/logs'
 import { Route as HistoryRouteImport } from './routes/history'
 import { Route as ChatRouteImport } from './routes/chat'
+import { Route as BrowserRouteImport } from './routes/browser'
 import { Route as AboutRouteImport } from './routes/about'
 import { Route as IndexRouteImport } from './routes/index'
 
@@ -39,6 +41,11 @@ const PluginsRoute = PluginsRouteImport.update({
   path: '/plugins',
   getParentRoute: () => rootRouteImport,
 } as any)
+const MobileRoute = MobileRouteImport.update({
+  id: '/mobile',
+  path: '/mobile',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const LogsRoute = LogsRouteImport.update({
   id: '/logs',
   path: '/logs',
@@ -52,6 +59,11 @@ const HistoryRoute = HistoryRouteImport.update({
 const ChatRoute = ChatRouteImport.update({
   id: '/chat',
   path: '/chat',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const BrowserRoute = BrowserRouteImport.update({
+  id: '/browser',
+  path: '/browser',
   getParentRoute: () => rootRouteImport,
 } as any)
 const AboutRoute = AboutRouteImport.update({
@@ -68,9 +80,11 @@ const IndexRoute = IndexRouteImport.update({
 export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
   '/about': typeof AboutRoute
+  '/browser': typeof BrowserRoute
   '/chat': typeof ChatRoute
   '/history': typeof HistoryRoute
   '/logs': typeof LogsRoute
+  '/mobile': typeof MobileRoute
   '/plugins': typeof PluginsRoute
   '/scheduled-tasks': typeof ScheduledTasksRoute
   '/settings': typeof SettingsRoute
@@ -79,9 +93,11 @@ export interface FileRoutesByFullPath {
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
   '/about': typeof AboutRoute
+  '/browser': typeof BrowserRoute
   '/chat': typeof ChatRoute
   '/history': typeof HistoryRoute
   '/logs': typeof LogsRoute
+  '/mobile': typeof MobileRoute
   '/plugins': typeof PluginsRoute
   '/scheduled-tasks': typeof ScheduledTasksRoute
   '/settings': typeof SettingsRoute
@@ -91,9 +107,11 @@ export interface FileRoutesById {
   __root__: typeof rootRouteImport
   '/': typeof IndexRoute
   '/about': typeof AboutRoute
+  '/browser': typeof BrowserRoute
   '/chat': typeof ChatRoute
   '/history': typeof HistoryRoute
   '/logs': typeof LogsRoute
+  '/mobile': typeof MobileRoute
   '/plugins': typeof PluginsRoute
   '/scheduled-tasks': typeof ScheduledTasksRoute
   '/settings': typeof SettingsRoute
@@ -104,9 +122,11 @@ export interface FileRouteTypes {
   fullPaths:
     | '/'
     | '/about'
+    | '/browser'
     | '/chat'
     | '/history'
     | '/logs'
+    | '/mobile'
     | '/plugins'
     | '/scheduled-tasks'
     | '/settings'
@@ -115,9 +135,11 @@ export interface FileRouteTypes {
   to:
     | '/'
     | '/about'
+    | '/browser'
     | '/chat'
     | '/history'
     | '/logs'
+    | '/mobile'
     | '/plugins'
     | '/scheduled-tasks'
     | '/settings'
@@ -126,9 +148,11 @@ export interface FileRouteTypes {
     | '__root__'
     | '/'
     | '/about'
+    | '/browser'
     | '/chat'
     | '/history'
     | '/logs'
+    | '/mobile'
     | '/plugins'
     | '/scheduled-tasks'
     | '/settings'
@@ -138,9 +162,11 @@ export interface FileRouteTypes {
 export interface RootRouteChildren {
   IndexRoute: typeof IndexRoute
   AboutRoute: typeof AboutRoute
+  BrowserRoute: typeof BrowserRoute
   ChatRoute: typeof ChatRoute
   HistoryRoute: typeof HistoryRoute
   LogsRoute: typeof LogsRoute
+  MobileRoute: typeof MobileRoute
   PluginsRoute: typeof PluginsRoute
   ScheduledTasksRoute: typeof ScheduledTasksRoute
   SettingsRoute: typeof SettingsRoute
@@ -177,6 +203,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof PluginsRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/mobile': {
+      id: '/mobile'
+      path: '/mobile'
+      fullPath: '/mobile'
+      preLoaderRoute: typeof MobileRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/logs': {
       id: '/logs'
       path: '/logs'
@@ -196,6 +229,13 @@ declare module '@tanstack/react-router' {
       path: '/chat'
       fullPath: '/chat'
       preLoaderRoute: typeof ChatRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/browser': {
+      id: '/browser'
+      path: '/browser'
+      fullPath: '/browser'
+      preLoaderRoute: typeof BrowserRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/about': {
@@ -218,9 +258,11 @@ declare module '@tanstack/react-router' {
 const rootRouteChildren: RootRouteChildren = {
   IndexRoute: IndexRoute,
   AboutRoute: AboutRoute,
+  BrowserRoute: BrowserRoute,
   ChatRoute: ChatRoute,
   HistoryRoute: HistoryRoute,
   LogsRoute: LogsRoute,
+  MobileRoute: MobileRoute,
   PluginsRoute: PluginsRoute,
   ScheduledTasksRoute: ScheduledTasksRoute,
   SettingsRoute: SettingsRoute,

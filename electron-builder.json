@@ -1,0 +1,77 @@
+{
+  "$schema": "https://raw.githubusercontent.com/electron-userland/electron-builder/master/packages/app-builder-lib/scheme.json",
+  "productName": "Novaper",
+  "appId": "com.novaper.app",
+  "asar": true,
+  "directories": {
+    "output": "release"
+  },
+  "files": [
+    "dist-electron",
+    "apps/operator-web/dist",
+    "!**/__pycache__",
+    "!extra",
+    "!docs",
+    "!scenarios"
+  ],
+  "extraResources": [
+    {
+      "from": "agents/sidecar-win",
+      "to": "agents/sidecar-win",
+      "filter": ["**/*"]
+    },
+    {
+      "from": "scenarios",
+      "to": "scenarios",
+      "filter": ["**/*"]
+    },
+    {
+      "from": "data",
+      "to": "data-defaults",
+      "filter": ["plugins/**/*", "!plugins/installed-skills.json"]
+    }
+  ],
+  "protocols": [
+    {
+      "name": "Novaper Protocol",
+      "schemes": ["novaper"]
+    }
+  ],
+  "publish": [
+    {
+      "provider": "github",
+      "owner": "Charlo-O",
+      "repo": "Novaper",
+      "releaseType": "release"
+    }
+  ],
+  "icon": "apps/operator-web/public/icon.ico",
+  "win": {
+    "icon": "apps/operator-web/public/icon.ico",
+    "artifactName": "${productName}.Setup.${version}.exe",
+    "target": [
+      {
+        "target": "nsis",
+        "arch": ["x64"]
+      }
+    ]
+  },
+  "mac": {
+    "icon": "apps/operator-web/public/icon.icns",
+    "target": ["dmg", "zip"],
+    "hardenedRuntime": true,
+    "gatekeeperAssess": false
+  },
+  "linux": {
+    "icon": "apps/operator-web/public/icon.png",
+    "target": ["AppImage"],
+    "category": "Development"
+  },
+  "nsis": {
+    "oneClick": false,
+    "perMachine": false,
+    "allowElevation": true,
+    "allowToChangeInstallationDirectory": true,
+    "deleteAppDataOnUninstall": false
+  }
+}
