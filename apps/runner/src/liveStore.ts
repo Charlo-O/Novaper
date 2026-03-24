@@ -3,6 +3,13 @@ import { promises as fs } from "node:fs";
 import path from "node:path";
 import type { Response } from "express";
 import type { AuthProvider } from "../../../packages/replay-schema/src/types.js";
+import {
+  DEFAULT_AGENT_DRIVER_ID,
+  normalizeAgentConfig,
+  normalizeAgentDriverId,
+  type AgentConfigParams,
+  type AgentDriverId,
+} from "./agentDrivers.js";
 
 export interface PendingConfirmation {
   message: string;
@@ -17,6 +24,8 @@ export interface LiveSession {
   updatedAt: string;
   model: string;
   authProvider?: AuthProvider;
+  agentType: AgentDriverId;
+  agentConfig: AgentConfigParams;
   status: "idle" | "observing" | "acting" | "error" | "waiting_confirmation";
   artifactDir: string;
   previousResponseId?: string;
@@ -63,7 +72,9 @@ export class LiveSessionStore {
       const sessionPath = path.join(this.rootDir, entry, "session.json");
       try {
         const raw = await fs.readFile(sessionPath, "utf8");
-        const session: LiveSession = JSON.parse(raw);
+        const session = JSON.parse(raw) as LiveSession;
+        session.agentType = normalizeAgentDriverId(session.agentType);
+        session.agentConfig = normalizeAgentConfig(session.agentConfig);
 
         // Recover sessions that were mid-execution when the server stopped.
         // These will never resume, so reset them to idle.
@@ -110,7 +121,12 @@ export class LiveSessionStore {
     return true;
   }
 
-  async createSession(model: string, authProvider?: AuthProvider): Promise<LiveSession> {
+  async createSession(
+    model: string,
+    authProvider?: AuthProvider,
+    agentType: AgentDriverId = DEFAULT_AGENT_DRIVER_ID,
+    agentConfig: AgentConfigParams = {},
+  ): Promise<LiveSession> {
     const id = randomUUID();
     const artifactDir = path.join(this.rootDir, id);
     await fs.mkdir(path.join(artifactDir, "screenshots"), { recursive: true });
@@ -121,6 +137,8 @@ export class LiveSessionStore {
       updatedAt: now(),
       model,
       authProvider,
+      agentType: normalizeAgentDriverId(agentType),
+      agentConfig: normalizeAgentConfig(agentConfig),
       status: "idle",
       artifactDir,
     };
@@ -148,6 +166,14 @@ export class LiveSessionStore {
     const updated: LiveSession = {
       ...session,
       ...patch,
+      agentType:
+        patch.agentType === undefined
+          ? session.agentType
+          : normalizeAgentDriverId(patch.agentType),
+      agentConfig:
+        patch.agentConfig === undefined
+          ? session.agentConfig
+          : normalizeAgentConfig(patch.agentConfig),
       updatedAt: now(),
     };
     this.sessions.set(sessionId, updated);

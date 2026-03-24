@@ -6,6 +6,11 @@ import type { AuthProvider } from "../../../packages/replay-schema/src/types.js"
 import { loadScenarios } from "../../../packages/scenario-kit/src/loadScenarios.js";
 import { RunStore } from "./store.js";
 import { LiveSessionStore } from "./liveStore.js";
+import {
+  getAgentDriver,
+  normalizeAgentConfig,
+  normalizeAgentDriverId,
+} from "./agentDrivers.js";
 import { executeRun } from "../../../packages/runner-core/src/runExecutor.js";
 import { DesktopSidecar } from "../../../packages/desktop-runtime/src/sidecar.js";
 import { driveDesktopAgent, type DesktopAgentToolCall } from "../../../packages/runner-core/src/desktopAgent.js";
@@ -45,6 +50,10 @@ function normalizeRequestedProvider(input: unknown) {
 
 function authErrorStatus(message: string) {
   return /not configured|not authenticated|No auth provider/i.test(message) ? 400 : 500;
+}
+
+function canReuseResponseChain(authProvider?: AuthProvider) {
+  return authProvider !== "codex-oauth";
 }
 
 interface VerificationAssessment {
@@ -1430,7 +1439,20 @@ export async function createServer(config: {
     const session = await liveStore.createSession(
       typeof request.body?.model === "string" ? request.body.model : config.model,
       normalizeRequestedProvider(request.body?.authProvider),
+      normalizeAgentDriverId(request.body?.agentType ?? request.body?.agent_type),
+      normalizeAgentConfig(request.body?.agentConfig ?? request.body?.agent_config_params),
     );
+    const agentDriver = getAgentDriver(session.agentType);
+    await liveStore.appendEvent(session.id, {
+      type: "log",
+      level: "info",
+      message: `Agent driver selected: ${agentDriver.label}.`,
+      payload: {
+        driverId: agentDriver.id,
+        driverLabel: agentDriver.label,
+        agentConfig: session.agentConfig,
+      },
+    });
     await liveStore.appendEvent(session.id, {
       type: "status",
       level: "info",
@@ -1521,6 +1543,12 @@ export async function createServer(config: {
     const requestedProvider = normalizeRequestedProvider(request.body?.authProvider) ?? session.authProvider;
     const customBaseUrl = typeof request.body?.baseUrl === "string" ? request.body.baseUrl.trim() : "";
     const customApiKey = typeof request.body?.apiKey === "string" ? request.body.apiKey.trim() : "";
+    const requestedAgentDriver = getAgentDriver(
+      request.body?.agentType ?? request.body?.agent_type ?? session.agentType,
+    );
+    const requestedAgentConfig = normalizeAgentConfig(
+      request.body?.agentConfig ?? request.body?.agent_config_params ?? session.agentConfig,
+    );
 
     let auth;
     try {
@@ -1541,6 +1569,8 @@ export async function createServer(config: {
       latestInstruction: instruction,
       model: typeof request.body?.model === "string" ? request.body.model : session.model,
       authProvider: auth.authProvider,
+      agentType: requestedAgentDriver.id,
+      agentConfig: requestedAgentConfig,
       error: undefined,
     });
     await liveStore.appendEvent(session.id, {
@@ -1556,27 +1586,64 @@ export async function createServer(config: {
       message: "Auth provider selected.",
       payload: { authProvider: auth.authProvider },
     });
+    await liveStore.appendEvent(session.id, {
+      type: "log",
+      level: "info",
+      message: `Agent driver selected: ${requestedAgentDriver.label}.`,
+      payload: {
+        driverId: requestedAgentDriver.id,
+        driverLabel: requestedAgentDriver.label,
+        agentConfig: requestedAgentConfig,
+      },
+    });
 
     void (async () => {
       try {
         const capabilityContext = await loadCapabilityContext(pluginStore);
+        const agentDriver = getAgentDriver(updated.agentType);
+        const driverPrompt = agentDriver.buildDeveloperPrompt(
+          buildLiveDeveloperPrompt({
+            capabilityBrief: capabilityContext.capabilityBrief,
+            skills: capabilityContext.skills,
+          }),
+          updated.agentConfig,
+        );
+        const verificationPrompt = agentDriver.buildDeveloperPrompt(
+          buildLiveDeveloperPrompt(),
+          updated.agentConfig,
+        );
+        const rootInstruction = agentDriver.decorateInstruction(
+          instruction,
+          "root",
+          updated.agentConfig,
+        );
 
         // Classify instruction to determine agent routing
-        let agentType: AgentRoute = "desktop";
+        let classifiedRoute: AgentRoute = "desktop";
         try {
-          agentType = await classifyInstruction(instruction, auth.client, updated.model);
+          classifiedRoute = await classifyInstruction(instruction, auth.client, updated.model);
         } catch {
-          agentType = "desktop"; // Safe fallback
+          classifiedRoute = "desktop"; // Safe fallback
         }
+        const executionRoute = agentDriver.resolveRoute({
+          instruction,
+          classifiedRoute,
+          agentConfig: updated.agentConfig,
+        });
 
         await liveStore.appendEvent(updated.id, {
           type: "agent_route",
           level: "info",
-          message: `Routed to ${agentType} agent.`,
-          payload: { agentType },
+          message: `Routed ${agentDriver.label} to ${executionRoute} execution.`,
+          payload: {
+            agentType: executionRoute,
+            classifiedRoute,
+            driverId: agentDriver.id,
+            driverLabel: agentDriver.label,
+          },
         });
 
-        if (agentType === "planner") {
+        if (executionRoute === "planner") {
           // Complex task: decompose into subtasks
           const windows = await sidecar.listWindows();
           let memoryCtx = "";
@@ -1585,7 +1652,7 @@ export async function createServer(config: {
           } catch { /* best effort */ }
 
           const plan = await planTasks(
-            instruction,
+            agentDriver.decorateInstruction(instruction, "plan", updated.agentConfig),
             {
               windows,
               memory: memoryCtx,
@@ -1602,7 +1669,9 @@ export async function createServer(config: {
             payload: { plan: formatPlan(plan) },
           });
 
-          let plannerPreviousResponseId = auth.authProvider === "api-key" ? updated.previousResponseId : undefined;
+          let plannerPreviousResponseId = canReuseResponseChain(auth.authProvider)
+            ? updated.previousResponseId
+            : undefined;
 
           // Execute subtasks sequentially
           while (!isPlanComplete(plan)) {
@@ -1624,7 +1693,11 @@ export async function createServer(config: {
             try {
               if (task.agentType === "cli") {
                 const subResult = await drivePiAgent({
-                  instruction: task.description,
+                  instruction: agentDriver.decorateInstruction(
+                    task.description,
+                    "cli",
+                    updated.agentConfig,
+                  ),
                   client: auth.client,
                   model: updated.model,
                   artifactDir: updated.artifactDir,
@@ -1642,11 +1715,12 @@ export async function createServer(config: {
                 const subResult = await driveDesktopAgent({
                   client: auth.client,
                   model: updated.model,
-                  developerPrompt: buildLiveDeveloperPrompt({
-                    capabilityBrief: capabilityContext.capabilityBrief,
-                    skills: capabilityContext.skills,
-                  }),
-                  userContent: `${stepInstruction}\n\n[User Task]\n${task.description}`,
+                  developerPrompt: driverPrompt,
+                  userContent: `${stepInstruction}\n\n[User Task]\n${agentDriver.decorateInstruction(
+                    task.description,
+                    "task",
+                    updated.agentConfig,
+                  )}`,
                   previousResponseId: plannerPreviousResponseId,
                   sidecar,
                   artifactDir: updated.artifactDir,
@@ -1655,7 +1729,7 @@ export async function createServer(config: {
                     await liveStore.appendEvent(updated.id, event);
                   },
                   shouldStop: () => Boolean(liveStore.getSession(updated.id)?.stopRequested),
-                  maxTurns: 20,
+                  maxTurns: agentDriver.plannerStepMaxTurns,
                   memoryManager,
                   browserSessionManager,
                   sessionId: updated.id,
@@ -1665,7 +1739,9 @@ export async function createServer(config: {
                 let latestScreenshotUrl = subResult.latestScreenshotUrl ?? updated.latestScreenshotUrl;
                 let combinedToolCalls = [...subResult.toolCalls];
                 let verification = evaluateTaskVerification(task, combinedToolCalls);
-                plannerPreviousResponseId = auth.authProvider === "api-key" ? subResult.responseId : undefined;
+                plannerPreviousResponseId = canReuseResponseChain(auth.authProvider)
+                  ? subResult.responseId
+                  : undefined;
 
                 if (!verification.verified) {
                   await liveStore.appendEvent(updated.id, {
@@ -1682,7 +1758,7 @@ export async function createServer(config: {
                   const verifyResult = await driveDesktopAgent({
                     client: auth.client,
                     model: updated.model,
-                    developerPrompt: buildLiveDeveloperPrompt(),
+                    developerPrompt: verificationPrompt,
                     userContent: buildVerificationFollowUpInstruction(task, verification),
                     previousResponseId: plannerPreviousResponseId,
                     sidecar,
@@ -1692,7 +1768,7 @@ export async function createServer(config: {
                       await liveStore.appendEvent(updated.id, event);
                     },
                     shouldStop: () => Boolean(liveStore.getSession(updated.id)?.stopRequested),
-                    maxTurns: 8,
+                    maxTurns: agentDriver.verificationMaxTurns,
                     memoryManager,
                     browserSessionManager,
                     sessionId: updated.id,
@@ -1702,7 +1778,9 @@ export async function createServer(config: {
                   latestScreenshotUrl = verifyResult.latestScreenshotUrl ?? latestScreenshotUrl;
                   combinedToolCalls = [...combinedToolCalls, ...verifyResult.toolCalls];
                   verification = evaluateTaskVerification(task, combinedToolCalls);
-                  plannerPreviousResponseId = auth.authProvider === "api-key" ? verifyResult.responseId : plannerPreviousResponseId;
+                  plannerPreviousResponseId = canReuseResponseChain(auth.authProvider)
+                    ? verifyResult.responseId
+                    : plannerPreviousResponseId;
                 }
 
                 if (!verification.verified && taskAllowsVisionFallback(task)) {
@@ -1773,9 +1851,13 @@ export async function createServer(config: {
             message: "Task plan completed.",
             payload: { summary: completedSummaries, plan: formatPlan(plan) },
           });
-        } else if (agentType === "cli") {
+        } else if (executionRoute === "cli") {
           const result = await drivePiAgent({
-            instruction,
+            instruction: agentDriver.decorateInstruction(
+              instruction,
+              "cli",
+              updated.agentConfig,
+            ),
             client: auth.client,
             model: updated.model,
             artifactDir: updated.artifactDir,
@@ -1804,12 +1886,11 @@ export async function createServer(config: {
           const result = await driveDesktopAgent({
             client: auth.client,
             model: updated.model,
-            developerPrompt: buildLiveDeveloperPrompt({
-              capabilityBrief: capabilityContext.capabilityBrief,
-              skills: capabilityContext.skills,
-            }),
-            userContent: instruction,
-            previousResponseId: auth.authProvider === "api-key" ? updated.previousResponseId : undefined,
+            developerPrompt: driverPrompt,
+            userContent: rootInstruction,
+            previousResponseId: canReuseResponseChain(auth.authProvider)
+              ? updated.previousResponseId
+              : undefined,
             sidecar,
             artifactDir: updated.artifactDir,
             screenshotBaseUrl: `/artifacts/live/${updated.id}`,
@@ -1817,7 +1898,7 @@ export async function createServer(config: {
               await liveStore.appendEvent(updated.id, event);
             },
             shouldStop: () => Boolean(liveStore.getSession(updated.id)?.stopRequested),
-            maxTurns: 30,
+            maxTurns: agentDriver.desktopMaxTurns,
             memoryManager,
             browserSessionManager,
             sessionId: updated.id,
@@ -1825,7 +1906,9 @@ export async function createServer(config: {
 
           await liveStore.updateSession(updated.id, {
             status: "idle",
-            previousResponseId: auth.authProvider === "api-key" ? result.responseId : undefined,
+            previousResponseId: canReuseResponseChain(auth.authProvider)
+              ? result.responseId
+              : undefined,
             latestSummary: result.summary,
             latestScreenshotUrl: result.latestScreenshotUrl ?? updated.latestScreenshotUrl,
           });

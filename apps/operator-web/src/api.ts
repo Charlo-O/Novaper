@@ -555,7 +555,9 @@ type LiveSessionSnapshot = {
   session: {
     id: string;
     model: string;
-    authProvider?: 'api-key' | 'codex-oauth';
+    authProvider?: 'api-key' | 'codex-oauth' | 'custom-api';
+    agentType?: string;
+    agentConfig?: Record<string, unknown>;
   };
   events: LiveEventRecord[];
 };
@@ -591,6 +593,10 @@ function hasWindow() {
 
 function nowIso() {
   return new Date().toISOString();
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
 }
 
 function uniqueId(prefix: string) {
@@ -745,6 +751,19 @@ function getConfiguredModel(mode: SessionMode) {
     );
   }
   return config.model_name?.trim() || DEFAULT_MODEL;
+}
+
+function getConfiguredAgent() {
+  const config = getStoredConfig();
+  return {
+    agentType:
+      typeof config.agent_type === 'string' && config.agent_type.trim()
+        ? config.agent_type
+        : 'glm-async',
+    agentConfigParams: isRecord(config.agent_config_params)
+      ? config.agent_config_params
+      : {},
+  };
 }
 
 function toDisplayText(value: unknown) {
@@ -987,6 +1006,7 @@ async function ensureLiveSession(
     return liveSessionIds[mode];
   }
 
+  const agentSelection = getConfiguredAgent();
   const session = await fetchJson<{ id: string }>('/api/live-sessions', {
     method: 'POST',
     headers: {
@@ -995,6 +1015,8 @@ async function ensureLiveSession(
     body: JSON.stringify({
       model,
       authProvider,
+      agent_type: agentSelection.agentType,
+      agent_config_params: agentSelection.agentConfigParams,
     }),
   });
   liveSessionIds[mode] = session.id;
@@ -1291,10 +1313,26 @@ export function sendMessageStream(
         'agentType' in liveEvent.payload
           ? (liveEvent.payload as { agentType: string }).agentType
           : 'desktop';
+      const driverLabel =
+        liveEvent.payload &&
+        typeof liveEvent.payload === 'object' &&
+        'driverLabel' in liveEvent.payload &&
+        typeof (liveEvent.payload as { driverLabel?: unknown }).driverLabel ===
+          'string'
+          ? (liveEvent.payload as { driverLabel: string }).driverLabel
+          : null;
+      const routeLabel =
+        agentType === 'cli'
+          ? 'CLI (pi)'
+          : agentType === 'planner'
+            ? 'Planner'
+            : 'Desktop';
       onThinking({
         type: 'thinking',
         role: 'assistant',
-        chunk: `[Agent: ${agentType === 'cli' ? 'CLI (pi)' : 'Desktop'}]`,
+        chunk: driverLabel
+          ? `[Agent: ${driverLabel} / ${routeLabel}]`
+          : `[Agent: ${routeLabel}]`,
       });
       return;
     }
@@ -1396,6 +1434,7 @@ export function sendMessageStream(
     try {
       const authProvider = await resolvePreferredAuthProvider('classic');
       const model = getConfiguredModel('classic');
+      const agentSelection = getConfiguredAgent();
       const sessionId = await ensureLiveSession('classic', model, authProvider);
       const snapshot = await fetchJson<LiveSessionSnapshot>(
         `/api/live-sessions/${sessionId}`
@@ -1433,6 +1472,8 @@ export function sendMessageStream(
           instruction: message,
           model,
           authProvider,
+          agent_type: agentSelection.agentType,
+          agent_config_params: agentSelection.agentConfigParams,
           ...customApi,
         }),
       });
@@ -1868,9 +1909,25 @@ export function sendLayeredMessageStream(
         'agentType' in liveEvent.payload
           ? (liveEvent.payload as { agentType: string }).agentType
           : 'desktop';
+      const driverLabel =
+        liveEvent.payload &&
+        typeof liveEvent.payload === 'object' &&
+        'driverLabel' in liveEvent.payload &&
+        typeof (liveEvent.payload as { driverLabel?: unknown }).driverLabel ===
+          'string'
+          ? (liveEvent.payload as { driverLabel: string }).driverLabel
+          : null;
+      const routeLabel =
+        agentType === 'cli'
+          ? 'CLI (pi)'
+          : agentType === 'planner'
+            ? 'Planner'
+            : 'Desktop';
       handlers.onMessage({
         type: 'message',
-        content: `[Agent: ${agentType === 'cli' ? 'CLI (pi)' : 'Desktop'}]`,
+        content: driverLabel
+          ? `[Agent: ${driverLabel} / ${routeLabel}]`
+          : `[Agent: ${routeLabel}]`,
       });
       return;
     }
@@ -1953,6 +2010,7 @@ export function sendLayeredMessageStream(
     try {
       const authProvider = await resolvePreferredAuthProvider('layered');
       const model = getConfiguredModel('layered');
+      const agentSelection = getConfiguredAgent();
       const sessionId = await ensureLiveSession('layered', model, authProvider);
       const snapshot = await fetchJson<LiveSessionSnapshot>(
         `/api/live-sessions/${sessionId}`
@@ -1990,6 +2048,8 @@ export function sendLayeredMessageStream(
           instruction: message,
           model,
           authProvider,
+          agent_type: agentSelection.agentType,
+          agent_config_params: agentSelection.agentConfigParams,
           ...customApi,
         }),
       });

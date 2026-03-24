@@ -4,6 +4,8 @@ import { tanstackRouter } from '@tanstack/router-plugin/vite';
 import path from 'path';
 
 // Adapted for Novaper integration.
+const backendTarget = process.env.NOVAPER_BACKEND_URL || 'http://127.0.0.1:3333';
+
 export default defineConfig({
   define: {
     __BACKEND_VERSION__: JSON.stringify(
@@ -22,15 +24,15 @@ export default defineConfig({
   server: {
     proxy: {
       '/api': {
-        target: 'http://127.0.0.1:3333',
+        target: backendTarget,
         changeOrigin: true,
       },
       '/artifacts': {
-        target: 'http://127.0.0.1:3333',
+        target: backendTarget,
         changeOrigin: true,
       },
       '/socket.io': {
-        target: 'http://127.0.0.1:3333',
+        target: backendTarget,
         changeOrigin: true,
         ws: true,
       },

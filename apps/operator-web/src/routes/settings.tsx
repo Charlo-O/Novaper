@@ -705,17 +705,21 @@ function SettingsComponent() {
                     </div>
                   </div>
 
-                  <div className={`space-y-2 ${isVisionCodeX ? 'opacity-50 pointer-events-none' : ''}`}>
+                  <div className="space-y-2">
                     <Label htmlFor="model_name">{t.chat.modelName}</Label>
                     <Input
                       id="model_name"
-                      value={isVisionCodeX ? CODEX_DEFAULT_MODEL : tempConfig.model_name}
+                      value={tempConfig.model_name || (isVisionCodeX ? CODEX_DEFAULT_MODEL : '')}
                       onChange={e =>
                         setTempConfig({ ...tempConfig, model_name: e.target.value })
                       }
-                      disabled={isVisionCodeX}
                       placeholder="model-name"
                     />
+                    {isVisionCodeX && (
+                      <p className="text-xs text-slate-500 dark:text-slate-400">
+                        Codex OAuth 仅负责认证，模型名可以继续自定义。
+                      </p>
+                    )}
                   </div>
 
                   {/* Agent Type */}
@@ -1024,19 +1028,26 @@ function SettingsComponent() {
                   </div>
 
                   {/* Decision Model Name */}
-                  <div className={`space-y-2 ${isDecisionCodeX ? 'opacity-50 pointer-events-none' : ''}`}>
+                  <div className="space-y-2">
                     <Label htmlFor="decision_model_name">
                       {t.chat.decisionModelName} {!isDecisionCodeX && '*'}
                     </Label>
                     <Input
                       id="decision_model_name"
-                      value={isDecisionCodeX ? CODEX_DEFAULT_MODEL : tempConfig.decision_model_name}
+                      value={
+                        tempConfig.decision_model_name ||
+                        (isDecisionCodeX ? CODEX_DEFAULT_MODEL : '')
+                      }
                       onChange={e =>
                         setTempConfig({ ...tempConfig, decision_model_name: e.target.value })
                       }
-                      disabled={isDecisionCodeX}
                       placeholder=""
                     />
+                    {isDecisionCodeX && (
+                      <p className="text-xs text-slate-500 dark:text-slate-400">
+                        决策模型名在 Codex OAuth 下也可以自定义。
+                      </p>
+                    )}
                   </div>
                 </TabsContent>
               </Tabs>
