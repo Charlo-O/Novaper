@@ -1,6 +1,6 @@
 {
   "name": "novaper",
-  "version": "0.6.0",
+  "version": "0.6.2",
   "private": true,
   "description": "Novaper is an AI Windows desktop operator with live observation, replayable runs, and dual authentication.",
   "type": "module",
