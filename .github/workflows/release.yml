@@ -28,15 +28,20 @@ jobs:
 
       - name: Build & Package (Windows)
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           ELECTRON: "1"
-        run: npm run electron:build:win
+        run: |
+          npx cross-env ELECTRON=1 npm run --prefix apps/operator-web build
+          npm run build:electron
+          npx electron-builder --win --publish never
 
       - name: Upload Windows artifact
         uses: actions/upload-artifact@v4
         with:
           name: novaper-windows
-          path: dist/*.exe
+          path: |
+            dist/*.exe
+            dist/*.blockmap
+            dist/latest*.yml
 
   build-macos:
     runs-on: macos-latest
@@ -56,12 +61,11 @@ jobs:
 
       - name: Build & Package (macOS)
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           ELECTRON: "1"
         run: |
           npx cross-env ELECTRON=1 npm run --prefix apps/operator-web build
           npm run build:electron
-          npx electron-builder --mac
+          npx electron-builder --mac --publish never
 
       - name: Upload macOS artifact
         uses: actions/upload-artifact@v4
@@ -70,6 +74,8 @@ jobs:
           path: |
             dist/*.dmg
             dist/*.zip
+            dist/*.blockmap
+            dist/latest*.yml
 
   build-linux:
     runs-on: ubuntu-latest
@@ -89,18 +95,19 @@ jobs:
 
       - name: Build & Package (Linux)
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           ELECTRON: "1"
         run: |
           npx cross-env ELECTRON=1 npm run --prefix apps/operator-web build
           npm run build:electron
-          npx electron-builder --linux
+          npx electron-builder --linux AppImage --publish never
 
       - name: Upload Linux artifact
         uses: actions/upload-artifact@v4
         with:
           name: novaper-linux
-          path: dist/*.AppImage
+          path: |
+            dist/*.AppImage
+            dist/latest*.yml
 
   publish-release:
     needs: [build-windows, build-macos, build-linux]
@@ -121,8 +128,13 @@ jobs:
           generate_release_notes: true
           files: |
             dist/novaper-windows/*.exe
+            dist/novaper-windows/*.blockmap
+            dist/novaper-windows/latest*.yml
             dist/novaper-macos/*.dmg
             dist/novaper-macos/*.zip
+            dist/novaper-macos/*.blockmap
+            dist/novaper-macos/latest*.yml
             dist/novaper-linux/*.AppImage
+            dist/novaper-linux/latest*.yml
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
