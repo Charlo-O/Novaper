@@ -7,7 +7,7 @@
     "output": "release"
   },
   "files": [
-    "dist-electron",
+    "apps/operator-web/dist-electron",
     "apps/operator-web/dist",
     "!**/__pycache__",
     "!extra",
