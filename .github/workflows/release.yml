@@ -39,9 +39,9 @@ jobs:
         with:
           name: novaper-windows
           path: |
-            dist/*.exe
-            dist/*.blockmap
-            dist/latest*.yml
+            release/*.exe
+            release/*.blockmap
+            release/latest*.yml
 
   build-macos:
     runs-on: macos-latest
@@ -72,10 +72,10 @@ jobs:
         with:
           name: novaper-macos
           path: |
-            dist/*.dmg
-            dist/*.zip
-            dist/*.blockmap
-            dist/latest*.yml
+            release/*.dmg
+            release/*.zip
+            release/*.blockmap
+            release/latest*.yml
 
   build-linux:
     runs-on: ubuntu-latest
@@ -106,8 +106,8 @@ jobs:
         with:
           name: novaper-linux
           path: |
-            dist/*.AppImage
-            dist/latest*.yml
+            release/*.AppImage
+            release/latest*.yml
 
   publish-release:
     if: startsWith(github.ref, 'refs/tags/v')
