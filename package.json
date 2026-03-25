@@ -1,6 +1,6 @@
 {
   "name": "novaper",
-  "version": "0.6.2",
+  "version": "0.7.1",
   "private": true,
   "description": "Novaper is an AI Windows desktop operator with live observation, replayable runs, and dual authentication.",
   "type": "module",
@@ -10,7 +10,7 @@
     "dev": "tsx watch apps/runner/src/index.ts",
     "typecheck": "tsc --noEmit",
     "build:electron": "node scripts/build-electron.mjs",
-    "electron:dev": "npm run build:electron && cross-env ELECTRON=1 npm run --prefix apps/operator-web dev",
+    "electron:dev": "node scripts/electron-dev.mjs",
     "electron:build": "cross-env ELECTRON=1 npm run --prefix apps/operator-web build && npm run build:electron && electron-builder",
     "electron:build:win": "cross-env ELECTRON=1 npm run --prefix apps/operator-web build && npm run build:electron && electron-builder --win"
   },

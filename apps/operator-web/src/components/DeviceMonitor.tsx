@@ -5,15 +5,17 @@ import { ResizableHandle } from './ResizableHandle';
 import { useLocalStorage } from '../hooks/useLocalStorage';
 import { useViewportWidth } from '../hooks/useViewportWidth';
 import type { ScreenshotResponse } from '../api';
-import { getScreenshot } from '../api';
+import { getLiveSessionId, getScreenshot } from '../api';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { Card } from '@/components/ui/card';
 import { useTranslation } from '../lib/i18n-context';
+import { useElectron } from '../hooks/useElectron';
 import {
   Video,
   Image as ImageIcon,
   MonitorPlay,
+  Globe,
   ChevronLeft,
   ChevronRight,
   Fingerprint,
@@ -55,6 +57,7 @@ export function DeviceMonitor({
   liveSessionId,
 }: DeviceMonitorProps) {
   const t = useTranslation();
+  const { api, isElectron } = useElectron();
 
   const isRemoteDevice = connectionType === 'remote';
   const viewportWidth = useViewportWidth();
@@ -62,10 +65,15 @@ export function DeviceMonitor({
   const [useVideoStream, setUseVideoStream] = useState(!isRemoteDevice);
   const [videoStreamFailed, setVideoStreamFailed] = useState(true);
   const [displayMode, setDisplayMode] = useState<
-    'auto' | 'video' | 'screenshot' | 'live'
+    'auto' | 'video' | 'screenshot' | 'live' | 'browser'
   >(isRemoteDevice ? 'screenshot' : 'auto');
+  const [resolvedLiveSessionId, setResolvedLiveSessionId] = useState<
+    string | undefined
+  >(() => liveSessionId ?? getLiveSessionId('classic') ?? getLiveSessionId('layered') ?? undefined);
+  const [shownWebviewIds, setShownWebviewIds] = useState<string[]>([]);
   const liveCanvasRef = useRef<HTMLCanvasElement>(null);
   const liveEventSourceRef = useRef<EventSource | null>(null);
+  const browserHostRef = useRef<HTMLDivElement>(null);
   const [feedbackMessage, setFeedbackMessage] = useState<string | null>(null);
   const [feedbackType, setFeedbackType] = useState<
     'tap' | 'swipe' | 'error' | 'success'
@@ -84,6 +92,13 @@ export function DeviceMonitor({
   const feedbackTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const controlsTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const lastCompactRef = useRef<boolean | null>(null);
+  const effectiveLiveSessionId =
+    liveSessionId ??
+    resolvedLiveSessionId ??
+    getLiveSessionId('classic') ??
+    getLiveSessionId('layered') ??
+    undefined;
+  const hasEmbeddedBrowser = isElectron && shownWebviewIds.length > 0;
 
   const collapseThreshold = viewportWidth < 1280 ? 220 : 156;
 
@@ -163,19 +178,133 @@ export function DeviceMonitor({
     [displayMode]
   );
 
-  const toggleDisplayMode = (mode: 'auto' | 'video' | 'screenshot' | 'live') => {
+  const toggleDisplayMode = (
+    mode: 'auto' | 'video' | 'screenshot' | 'live' | 'browser'
+  ) => {
     setDisplayMode(mode);
   };
 
-  // Live frame stream via SSE
+  const syncShownWebviews = useCallback(async () => {
+    if (!api) {
+      setShownWebviewIds([]);
+      return;
+    }
+
+    try {
+      const ids = await api.getShowWebview();
+      setShownWebviewIds(
+        Array.isArray(ids)
+          ? ids.filter((id): id is string => typeof id === 'string')
+          : []
+      );
+    } catch {
+      setShownWebviewIds([]);
+    }
+  }, [api]);
+
+  const syncBrowserBounds = useCallback(async () => {
+    if (!api || !browserHostRef.current) {
+      return;
+    }
+
+    const rect = browserHostRef.current.getBoundingClientRect();
+    if (rect.width < 1 || rect.height < 1) {
+      return;
+    }
+
+    await api.setSize({
+      x: Math.round(rect.left),
+      y: Math.round(rect.top),
+      width: Math.round(rect.width),
+      height: Math.round(rect.height),
+    });
+  }, [api]);
+
   useEffect(() => {
-    if (isCollapsed || displayMode !== 'live' || !liveSessionId || !isVisible) {
+    if (liveSessionId) {
+      setResolvedLiveSessionId(liveSessionId);
+    }
+  }, [liveSessionId]);
+
+  useEffect(() => {
+    if (typeof window === 'undefined') {
+      return;
+    }
+
+    const syncLiveSession = () => {
+      setResolvedLiveSessionId(
+        liveSessionId ??
+          getLiveSessionId('classic') ??
+          getLiveSessionId('layered') ??
+          undefined
+      );
+    };
+
+    syncLiveSession();
+    const handleLiveSessionChange = () => {
+      syncLiveSession();
+    };
+
+    window.addEventListener(
+      'novaper-live-session-changed',
+      handleLiveSessionChange as EventListener
+    );
+    return () => {
+      window.removeEventListener(
+        'novaper-live-session-changed',
+        handleLiveSessionChange as EventListener
+      );
+    };
+  }, [liveSessionId]);
+
+  useEffect(() => {
+    void syncShownWebviews();
+  }, [syncShownWebviews]);
+
+  useEffect(() => {
+    if (!api) {
+      return;
+    }
+
+    const cleanupShow = api.onWebviewShow((id: string) => {
+      setShownWebviewIds(prev => (prev.includes(id) ? prev : [...prev, id]));
+      setDisplayMode('browser');
+    });
+    const cleanupHide = api.onWebviewHide((id: string) => {
+      setShownWebviewIds(prev => prev.filter(existingId => existingId !== id));
+    });
+
+    return () => {
+      cleanupShow();
+      cleanupHide();
+    };
+  }, [api]);
+
+  useEffect(() => {
+    if (displayMode !== 'browser' || shownWebviewIds.length > 0) {
+      return;
+    }
+
+    setDisplayMode(
+      effectiveLiveSessionId ? 'live' : isRemoteDevice ? 'screenshot' : 'auto'
+    );
+  }, [displayMode, effectiveLiveSessionId, isRemoteDevice, shownWebviewIds.length]);
+
+  useEffect(() => {
+    if (
+      isCollapsed ||
+      displayMode !== 'live' ||
+      !effectiveLiveSessionId ||
+      !isVisible
+    ) {
       liveEventSourceRef.current?.close();
       liveEventSourceRef.current = null;
       return;
     }
 
-    const es = new EventSource(`/api/live-sessions/${liveSessionId}/screen-stream`);
+    const es = new EventSource(
+      `/api/live-sessions/${effectiveLiveSessionId}/screen-stream`
+    );
     liveEventSourceRef.current = es;
 
     es.onmessage = (event) => {
@@ -207,7 +336,62 @@ export function DeviceMonitor({
       es.close();
       liveEventSourceRef.current = null;
     };
-  }, [displayMode, liveSessionId, isVisible, isCollapsed]);
+  }, [displayMode, effectiveLiveSessionId, isVisible, isCollapsed]);
+
+  useEffect(() => {
+    if (!api) {
+      return;
+    }
+
+    if (
+      !isVisible ||
+      isCollapsed ||
+      displayMode !== 'browser' ||
+      shownWebviewIds.length === 0
+    ) {
+      shownWebviewIds.forEach(id => {
+        void api.hideWebView(id);
+      });
+      return;
+    }
+
+    shownWebviewIds.forEach(id => {
+      void api.showWebview(id);
+    });
+    void syncBrowserBounds();
+
+    const host = browserHostRef.current;
+    if (!host) {
+      return;
+    }
+
+    const resizeObserver = new ResizeObserver(() => {
+      void syncBrowserBounds();
+    });
+    resizeObserver.observe(host);
+
+    const handleWindowResize = () => {
+      void syncBrowserBounds();
+    };
+    window.addEventListener('resize', handleWindowResize);
+
+    const frameId = window.requestAnimationFrame(() => {
+      void syncBrowserBounds();
+    });
+
+    return () => {
+      window.cancelAnimationFrame(frameId);
+      window.removeEventListener('resize', handleWindowResize);
+      resizeObserver.disconnect();
+    };
+  }, [
+    api,
+    displayMode,
+    isCollapsed,
+    isVisible,
+    shownWebviewIds,
+    syncBrowserBounds,
+  ]);
 
   useEffect(() => {
     return () => {
@@ -223,8 +407,13 @@ export function DeviceMonitor({
       if (liveEventSourceRef.current) {
         liveEventSourceRef.current.close();
       }
+      if (api) {
+        shownWebviewIds.forEach(id => {
+          void api.hideWebView(id);
+        });
+      }
     };
-  }, []);
+  }, [api, shownWebviewIds]);
 
   useEffect(() => {
     const isCompactViewport = viewportWidth < 1180;
@@ -382,7 +571,7 @@ export function DeviceMonitor({
                 <ImageIcon className="w-3 h-3 mr-1" />
                 {t.devicePanel?.image || 'Image'}
               </Button>
-              {liveSessionId && (
+              {effectiveLiveSessionId && (
                 <Button
                   variant="ghost"
                   size="sm"
@@ -395,6 +584,22 @@ export function DeviceMonitor({
                 >
                   <MonitorPlay className="w-3 h-3 mr-1" />
                   Live
+                </Button>
+              )}
+              {isElectron && (
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  onClick={() => toggleDisplayMode('browser')}
+                  disabled={!hasEmbeddedBrowser}
+                  className={`h-7 px-3 text-xs rounded-lg transition-colors ${
+                    displayMode === 'browser'
+                      ? 'bg-primary text-primary-foreground'
+                      : 'text-foreground hover:bg-accent hover:text-accent-foreground'
+                  } ${!hasEmbeddedBrowser ? 'opacity-50' : ''}`}
+                >
+                  <Globe className="w-3 h-3 mr-1" />
+                  DOM
                 </Button>
               )}
             </div>
@@ -436,6 +641,12 @@ export function DeviceMonitor({
               Live
             </>
           )}
+          {displayMode === 'browser' && (
+            <>
+              <Globe className="w-3 h-3 mr-1" />
+              DOM
+            </>
+          )}
           {displayMode === 'video' && (
             <>
               <MonitorPlay className="w-3 h-3 mr-1" />
@@ -462,8 +673,19 @@ export function DeviceMonitor({
         </div>
       )}
 
-      {/* Live frame stream via SSE */}
-      {displayMode === 'live' && liveSessionId ? (
+      {displayMode === 'browser' ? (
+        <div className="relative h-full w-full min-h-0 bg-muted/20">
+          <div className="absolute inset-x-4 top-16 bottom-14 overflow-hidden rounded-2xl border border-border bg-background/90 shadow-sm">
+            <div ref={browserHostRef} className="h-full w-full" />
+            {!hasEmbeddedBrowser && (
+              <div className="pointer-events-none absolute inset-0 flex items-center justify-center text-sm text-muted-foreground">
+                Waiting for embedded browser session...
+              </div>
+            )}
+          </div>
+        </div>
+      ) : /* Live frame stream via SSE */
+      displayMode === 'live' && effectiveLiveSessionId ? (
         <div className="w-full h-full flex items-center justify-center bg-muted/30 min-h-0">
           <canvas
             ref={liveCanvasRef}

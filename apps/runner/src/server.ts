@@ -294,7 +294,7 @@ function evaluateTaskVerification(task: TaskPlanItem, toolCalls: DesktopAgentToo
     }
 
     if ((call.name === "browser_snapshot" || call.name === "browser_read" || call.name === "browser_wait_for") && isRecord(result)) {
-      if (result.strategy === "playwright") {
+      if (result.strategy === "playwright" || result.strategy === "electron") {
         browserVerified = true;
         evidence.push(`browser state verified via ${call.name}`);
       }
@@ -350,17 +350,24 @@ function evaluateTaskVerification(task: TaskPlanItem, toolCalls: DesktopAgentToo
 function buildLiveDeveloperPrompt(options?: {
   capabilityBrief?: string;
   skills?: PromptSkill[];
+  browserRuntime?: "electron" | "playwright";
 }) {
+  const browserRuntime =
+    options?.browserRuntime === "electron"
+      ? "The browser_* tools use the built-in Electron WebView with direct DOM access."
+      : "The browser_* tools use Playwright with a persisted automation profile copied from the local Chromium profile.";
   const sections = [
     [
       "You are a live Windows desktop assistant similar to an interactive computer-use operator.",
       "The human is watching the current desktop and will send one instruction at a time.",
       "For every instruction, inspect the current desktop state before acting.",
       "Work in rolling steps: observe state, perform one minimal verifiable action, verify the result, then decide the next step.",
-      "Prefer tools in this order: 1) browser_* tools for web pages in Chrome, Edge, or other Chromium browsers, 2) UI Automation and deterministic desktop tools, 3) process/file/window tools, 4) desktop_actions for coordinate-based visual fallback, 5) the computer tool when available.",
+      "Prefer tools in this order: 1) browser_* tools for web pages, 2) UI Automation and deterministic desktop tools, 3) process/file/window tools, 4) desktop_actions for coordinate-based visual fallback, 5) the computer tool when available.",
       "When the instruction requires opening software, use resolve_application, open_application, wait_for_process, wait_for_window, verify_window_state, and focus_window before any coordinate clicks.",
       "When the task is happening inside a web page, use browser_snapshot before interacting and prefer browser_click, browser_type, browser_press_keys, browser_tabs, and browser_read over desktop clicks.",
-      "The browser_* tools use Playwright with a persisted automation profile copied from the local Chromium profile. If any browser_* result reports strategy='visual' or requiresDesktopActions=true, stop relying on DOM selectors and continue with desktop_actions against the attached desktop screenshot.",
+      browserRuntime,
+      "If any browser_* result reports strategy='visual' or requiresDesktopActions=true, stop relying on DOM selectors and continue with desktop_actions against the attached desktop screenshot.",
+      "If a browser_* result reports strategy='electron' or strategy='playwright', stay in the DOM/browser tool path and do not switch back to coordinate clicks unless the page stops responding.",
       "Never claim a desktop task is complete until you have used at least one tool during the current instruction.",
       "Never claim success for opening an app unless a process or window check confirms the target exists.",
       "Never claim success for search, playback, sending, or navigation tasks unless the post-action state visibly confirms the requested outcome.",
@@ -1605,11 +1612,14 @@ export async function createServer(config: {
           buildLiveDeveloperPrompt({
             capabilityBrief: capabilityContext.capabilityBrief,
             skills: capabilityContext.skills,
+            browserRuntime: config.webViewManager ? "electron" : "playwright",
           }),
           updated.agentConfig,
         );
         const verificationPrompt = agentDriver.buildDeveloperPrompt(
-          buildLiveDeveloperPrompt(),
+          buildLiveDeveloperPrompt({
+            browserRuntime: config.webViewManager ? "electron" : "playwright",
+          }),
           updated.agentConfig,
         );
         const rootInstruction = agentDriver.decorateInstruction(

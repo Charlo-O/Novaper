@@ -78,7 +78,14 @@ export class ElectronBrowserAdapter {
 
   private async buildResult(sessionId: string, extra?: Partial<ElectronSnapshotResult>): Promise<ElectronSnapshotResult> {
     const wc = this.requireWC(sessionId);
-    const snap = await snapshotWebContents(wc);
+    const snapshotOptions =
+      extra && typeof extra === "object"
+        ? {
+            includeText:
+              "textPreview" in extra ? extra.textPreview !== undefined : undefined,
+          }
+        : undefined;
+    const snap = await snapshotWebContents(wc, snapshotOptions);
     return {
       ...META,
       title: snap.title,
@@ -169,9 +176,20 @@ export class ElectronBrowserAdapter {
 
   async snapshot(
     sessionId: string,
-    _args: { maxElements?: number; includeText?: boolean; textLimit?: number } = {}
+    args: { maxElements?: number; includeText?: boolean; textLimit?: number } = {}
   ): Promise<ElectronSnapshotResult> {
-    return this.buildResult(sessionId);
+    const wc = this.requireWC(sessionId);
+    const snap = await snapshotWebContents(wc, args);
+    return {
+      ...META,
+      title: snap.title,
+      url: snap.url,
+      readyState: snap.readyState,
+      viewport: snap.viewport,
+      tabs: snap.tabs,
+      elements: snap.elements,
+      textPreview: snap.textPreview,
+    };
   }
 
   async click(

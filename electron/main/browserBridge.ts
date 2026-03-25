@@ -1,7 +1,10 @@
 import type { WebContents } from "electron";
 
 interface SnapshotElement {
+  index: number;
   ariaLabel: string | null;
+  bounds?: { x: number; y: number; width: number; height: number };
+  description?: string;
   disabled: boolean;
   href: string | null;
   name: string | null;
@@ -14,6 +17,12 @@ interface SnapshotElement {
   valuePreview?: string;
 }
 
+interface SnapshotOptions {
+  includeText?: boolean;
+  maxElements?: number;
+  textLimit?: number;
+}
+
 function escapeForScript(value: string) {
   return JSON.stringify(value);
 }
@@ -22,6 +31,11 @@ async function waitForLoad(webContents: WebContents) {
   if (!webContents.isLoadingMainFrame()) {
     return;
   }
+
+  const eventTarget = webContents as WebContents & {
+    on: (event: string, listener: (...args: any[]) => void) => void;
+    removeListener: (event: string, listener: (...args: any[]) => void) => void;
+  };
 
   await new Promise<void>((resolve, reject) => {
     const timeout = setTimeout(() => {
@@ -32,7 +46,7 @@ async function waitForLoad(webContents: WebContents) {
     const cleanup = () => {
       clearTimeout(timeout);
       webContents.removeListener("did-finish-load", onFinish);
-      webContents.removeListener("did-fail-load", onFail);
+      eventTarget.removeListener("did-fail-load", onFail);
     };
 
     const onFinish = () => {
@@ -50,7 +64,7 @@ async function waitForLoad(webContents: WebContents) {
     };
 
     webContents.on("did-finish-load", onFinish);
-    webContents.on("did-fail-load", onFail);
+    eventTarget.on("did-fail-load", onFail);
   });
 }
 
@@ -59,9 +73,43 @@ export async function navigateWebContents(webContents: WebContents, url: string)
   await waitForLoad(webContents);
 }
 
-export async function snapshotWebContents(webContents: WebContents) {
+export async function snapshotWebContents(
+  webContents: WebContents,
+  options: SnapshotOptions = {}
+) {
+  const maxElements = Math.max(
+    10,
+    Math.min(400, Math.trunc(options.maxElements ?? 200))
+  );
+  const textLimit = Math.max(
+    1000,
+    Math.min(200000, Math.trunc(options.textLimit ?? 4000))
+  );
+  const includeText = options.includeText !== false;
+
   const snapshot = await webContents.executeJavaScript(`
     (() => {
+      const MAX_ELEMENTS = ${maxElements};
+      const TEXT_LIMIT = ${textLimit};
+      const INCLUDE_TEXT = ${includeText};
+      const interactiveSelector = [
+        'a[href]',
+        'button',
+        'input:not([type="hidden"])',
+        'textarea',
+        'select',
+        'summary',
+        '[role="button"]',
+        '[role="link"]',
+        '[role="textbox"]',
+        '[role="searchbox"]',
+        '[role="combobox"]',
+        '[role="checkbox"]',
+        '[role="radio"]',
+        '[role="tab"]',
+        '[tabindex]'
+      ].join(',');
+
       const buildSelector = (element) => {
         if (!(element instanceof Element)) return "";
         if (element.id) return "#" + element.id;
@@ -78,30 +126,89 @@ export async function snapshotWebContents(webContents: WebContents) {
         return parts.join(" > ");
       };
 
+      const isVisible = (element) => {
+        if (!(element instanceof Element)) return false;
+        const style = window.getComputedStyle(element);
+        if (
+          style.display === 'none' ||
+          style.visibility === 'hidden' ||
+          style.opacity === '0'
+        ) {
+          return false;
+        }
+        const rect = element.getBoundingClientRect();
+        return rect.width > 0 && rect.height > 0;
+      };
+
+      const getLabel = (element) => {
+        if (!(element instanceof Element)) return null;
+        const ariaLabel = element.getAttribute('aria-label');
+        if (ariaLabel) return ariaLabel.trim();
+        const labelledBy = element.getAttribute('aria-labelledby');
+        if (labelledBy) {
+          const labelText = labelledBy
+            .split(/\\s+/)
+            .map((id) => document.getElementById(id)?.textContent?.trim() || '')
+            .filter(Boolean)
+            .join(' ');
+          if (labelText) return labelText.slice(0, 200);
+        }
+        const labeledElement = element;
+        if ('labels' in labeledElement && labeledElement.labels) {
+          const text = Array.from(labeledElement.labels)
+            .map((label) => label.textContent?.trim() || '')
+            .filter(Boolean)
+            .join(' ');
+          if (text) return text.slice(0, 200);
+        }
+        const placeholder = element.getAttribute('placeholder');
+        return placeholder ? placeholder.trim().slice(0, 200) : null;
+      };
+
+      const getDisabled = (element) => {
+        return 'disabled' in element ? Boolean(element.disabled) : false;
+      };
+
       const candidates = Array.from(
-        document.querySelectorAll("a,button,input,textarea,select,[role],summary")
+        document.querySelectorAll(interactiveSelector)
       )
-        .slice(0, 200)
-        .map((element) => ({
-          selector: buildSelector(element),
-          tag: element.tagName.toLowerCase(),
-          role: element.getAttribute("role"),
-          text: (element.textContent || "").trim().slice(0, 200),
-          ariaLabel: element.getAttribute("aria-label"),
-          name: element.getAttribute("name"),
-          placeholder: element.getAttribute("placeholder"),
-          type: element.getAttribute("type"),
-          href: element instanceof HTMLAnchorElement ? element.href : element.getAttribute("href"),
-          disabled: "disabled" in element ? Boolean(element.disabled) : false,
-          valuePreview: "value" in element ? String(element.value || "").slice(0, 120) : undefined,
-        }));
+        .filter((element, index, array) => array.indexOf(element) === index)
+        .filter((element) => isVisible(element))
+        .slice(0, MAX_ELEMENTS)
+        .map((element, index) => {
+          const rect = element.getBoundingClientRect();
+          const text = (element.textContent || "").trim().slice(0, 200);
+          const label = getLabel(element);
+          return {
+            index: index + 1,
+            selector: buildSelector(element),
+            tag: element.tagName.toLowerCase(),
+            role: element.getAttribute("role"),
+            text,
+            ariaLabel: element.getAttribute("aria-label"),
+            name: element.getAttribute("name"),
+            placeholder: element.getAttribute("placeholder"),
+            type: element.getAttribute("type"),
+            href: element instanceof HTMLAnchorElement ? element.href : element.getAttribute("href"),
+            disabled: getDisabled(element),
+            valuePreview: "value" in element ? String(element.value || "").slice(0, 120) : undefined,
+            description: [label, text].filter(Boolean).join(" | ").slice(0, 240),
+            bounds: {
+              x: Math.round(rect.left),
+              y: Math.round(rect.top),
+              width: Math.round(rect.width),
+              height: Math.round(rect.height),
+            },
+          };
+        });
 
       return {
         elements: candidates,
         readyState: document.readyState,
-        textPreview: (document.body?.innerText || "").slice(0, 4000),
+        textPreview: INCLUDE_TEXT ? (document.body?.innerText || "").slice(0, TEXT_LIMIT) : undefined,
         title: document.title,
         url: location.href,
+        lang: document.documentElement?.lang || null,
         viewport: {
           width: window.innerWidth,
           height: window.innerHeight,
@@ -124,7 +231,7 @@ export async function snapshotWebContents(webContents: WebContents) {
       },
     ],
     elements: snapshot.elements as SnapshotElement[],
-    textPreview: snapshot.textPreview as string,
+    textPreview: snapshot.textPreview as string | undefined,
   };
 }
 

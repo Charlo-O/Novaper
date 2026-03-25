@@ -47,7 +47,6 @@ export const Route = createFileRoute('/settings')({
 
 const CODEX_PRESET_NAME = 'codex';
 const CODEX_AGENT_NAME = 'codex-agent';
-const CODEX_BACKEND_AGENT_NAME = 'glm-async';
 const CODEX_DEFAULT_MODEL = 'gpt-5.4';
 
 const VISION_PRESETS = [
@@ -277,10 +276,6 @@ function SettingsComponent() {
         vision_provider: preset.name,
         base_url: preset.config.base_url,
         model_name: preset.config.model_name,
-        agent_type:
-          preset.name === CODEX_PRESET_NAME ? CODEX_AGENT_NAME : prev.agent_type,
-        agent_config_params:
-          preset.name === CODEX_PRESET_NAME ? {} : prev.agent_config_params,
       }));
     },
     []
@@ -293,10 +288,6 @@ function SettingsComponent() {
         decision_provider: preset.name,
         decision_base_url: preset.config.decision_base_url,
         decision_model_name: preset.config.decision_model_name,
-        agent_type:
-          preset.name === CODEX_PRESET_NAME ? CODEX_AGENT_NAME : prev.agent_type,
-        agent_config_params:
-          preset.name === CODEX_PRESET_NAME ? {} : prev.agent_config_params,
       }));
     },
     []
@@ -321,9 +312,7 @@ function SettingsComponent() {
           !data.decision_base_url &&
           !data.decision_model_name &&
           decisionProvider !== CODEX_PRESET_NAME;
-        const nextAgentType = usesCodeX
-          ? CODEX_AGENT_NAME
-          : data.agent_type || 'glm-async';
+        const nextAgentType = data.agent_type || 'glm-async';
         setAuthStatus(auth);
         setConfig({
           vision_provider: visionProvider,
@@ -380,17 +369,6 @@ function SettingsComponent() {
     return () => clearInterval(timer);
   }, [codexAuth?.loginInProgress, refreshAuthStatus]);
 
-  // Auto-select Codex Agent when vision is codex
-  useEffect(() => {
-    if (isVisionCodeX && tempConfig.agent_type !== CODEX_AGENT_NAME) {
-      setTempConfig(prev => ({
-        ...prev,
-        agent_type: CODEX_AGENT_NAME,
-        agent_config_params: {},
-      }));
-    }
-  }, [isVisionCodeX, tempConfig.agent_type]);
-
   const handleSaveConfig = async () => {
     if (!isVisionCodeX && !tempConfig.base_url) {
       showToast(t.chat.baseUrlRequired, 'error');
@@ -402,10 +380,7 @@ function SettingsComponent() {
     }
 
     try {
-      const nextAgentType =
-        tempConfig.agent_type === CODEX_AGENT_NAME
-          ? CODEX_BACKEND_AGENT_NAME
-          : tempConfig.agent_type;
+      const nextAgentType = tempConfig.agent_type;
       const nextAgentConfig =
         Object.keys(tempConfig.agent_config_params).length === 0
           ? undefined

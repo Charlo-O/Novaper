@@ -303,6 +303,7 @@ export const en = {
   navigation: {
     chat: 'Chat',
     workflows: 'Workflows',
+    browser: 'Browser',
     history: 'History',
     scheduledTasks: 'Scheduled Tasks',
     plugins: 'Plugins',

@@ -3,6 +3,7 @@ import { Link, useMatchRoute } from '@tanstack/react-router';
 import {
   Clock,
   FileText,
+  Globe,
   History,
   ListChecks,
   MessageSquare,
@@ -39,6 +40,7 @@ export function NavigationSidebar({ className }: NavigationSidebarProps) {
   const matchRoute = useMatchRoute();
   const viewportWidth = useViewportWidth();
   const isCompactViewport = viewportWidth < NAV_BREAKPOINT;
+  const [logoFailed, setLogoFailed] = React.useState(false);
   const [isCollapsedDesktop, setIsCollapsedDesktop] = useLocalStorage(
     'navigation-sidebar-collapsed',
     false
@@ -85,6 +87,12 @@ export function NavigationSidebar({ className }: NavigationSidebarProps) {
       icon: ListChecks,
       label: t.navigation.workflows,
       path: '/workflows',
+    },
+    {
+      id: 'browser',
+      icon: Globe,
+      label: t.navigation.browser || 'Browser',
+      path: '/browser',
     },
     {
       id: 'history',
@@ -153,11 +161,20 @@ export function NavigationSidebar({ className }: NavigationSidebarProps) {
             <Tooltip>
               <TooltipTrigger asChild>
                 <Link to="/chat" className="block">
-                  <img
-                    src="/brand-mark.svg"
-                    alt="Novaper Logo"
-                    className="h-10 w-10 object-contain transition-opacity hover:opacity-80"
-                  />
+                  <div className="relative flex h-11 w-11 items-center justify-center overflow-hidden rounded-2xl bg-gradient-to-br from-sky-500 via-cyan-400 to-emerald-400 shadow-[0_14px_28px_-18px_rgba(14,165,233,0.8)] ring-1 ring-sky-200/70">
+                    {!logoFailed ? (
+                      <img
+                        src="./brand-mark.svg"
+                        alt="Novaper Logo"
+                        className="h-full w-full object-contain transition-opacity hover:opacity-90"
+                        onError={() => setLogoFailed(true)}
+                      />
+                    ) : (
+                      <span className="text-base font-semibold tracking-[0.08em] text-white">
+                        N
+                      </span>
+                    )}
+                  </div>
                 </Link>
               </TooltipTrigger>
               <TooltipContent side="right" sideOffset={8}>

@@ -1,4 +1,5 @@
 import { BrowserWindow, WebContentsView } from "electron";
+import { EMBEDDED_BROWSER_PARTITION } from "./chromiumProfile.js";
 
 interface RecordedActionData {
   id: string;
@@ -38,6 +39,16 @@ interface Size {
   y: number;
   width: number;
   height: number;
+}
+
+interface WebviewState {
+  id: string;
+  url: string;
+  title: string;
+  canGoBack: boolean;
+  canGoForward: boolean;
+  isLoading: boolean;
+  isShow: boolean;
 }
 
 // Anti-fingerprinting stealth script injected into every webview
@@ -154,6 +165,24 @@ export class WebViewManager {
       .map((wv) => wv.id);
   }
 
+  public getWebviewState(id: string): WebviewState | null {
+    const info = this.webViews.get(id);
+    if (!info || info.view.webContents.isDestroyed()) {
+      return null;
+    }
+
+    const { webContents } = info.view;
+    return {
+      id,
+      url: webContents.getURL() || info.currentUrl || "about:blank",
+      title: webContents.getTitle(),
+      canGoBack: webContents.canGoBack(),
+      canGoForward: webContents.canGoForward(),
+      isLoading: webContents.isLoading(),
+      isShow: info.isShow,
+    };
+  }
+
   public async createWebview(id: string = "1", url: string = "about:blank?use=0") {
     if (this.webViews.has(id)) {
       return { success: false, error: `Webview with id ${id} already exists` };
@@ -162,7 +191,7 @@ export class WebViewManager {
     try {
       const view = new WebContentsView({
         webPreferences: {
-          partition: "persist:user_automation",
+          partition: `persist:${EMBEDDED_BROWSER_PARTITION}`,
           nodeIntegration: false,
           contextIsolation: true,
           backgroundThrottling: true,
@@ -276,6 +305,7 @@ export class WebViewManager {
     if (!info.view.webContents.isDestroyed()) {
       info.view.webContents.setBackgroundThrottling(true);
     }
+    this.win?.webContents.send("webview-hide", id);
     return { success: true };
   }
 
@@ -287,6 +317,7 @@ export class WebViewManager {
       if (!wv.view.webContents.isDestroyed()) {
         wv.view.webContents.setBackgroundThrottling(true);
       }
+      this.win?.webContents.send("webview-hide", wv.id);
     });
   }
 
@@ -307,6 +338,46 @@ export class WebViewManager {
     }
     this.win?.webContents.send("webview-show", id);
     return { success: true };
+  }
+
+  public async navigateWebview(id: string, url: string) {
+    const info = this.webViews.get(id);
+    if (!info) return { success: false, error: `Webview ${id} not found` };
+
+    try {
+      await info.view.webContents.loadURL(url);
+      return { success: true, state: this.getWebviewState(id) };
+    } catch (error: any) {
+      return { success: false, error: error.message };
+    }
+  }
+
+  public goBackWebview(id: string) {
+    const info = this.webViews.get(id);
+    if (!info) return { success: false, error: `Webview ${id} not found` };
+
+    if (info.view.webContents.canGoBack()) {
+      info.view.webContents.goBack();
+    }
+    return { success: true, state: this.getWebviewState(id) };
+  }
+
+  public goForwardWebview(id: string) {
+    const info = this.webViews.get(id);
+    if (!info) return { success: false, error: `Webview ${id} not found` };
+
+    if (info.view.webContents.canGoForward()) {
+      info.view.webContents.goForward();
+    }
+    return { success: true, state: this.getWebviewState(id) };
+  }
+
+  public reloadWebview(id: string) {
+    const info = this.webViews.get(id);
+    if (!info) return { success: false, error: `Webview ${id} not found` };
+
+    info.view.webContents.reload();
+    return { success: true, state: this.getWebviewState(id) };
   }
 
   public destroyWebview(id: string) {

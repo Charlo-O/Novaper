@@ -103,11 +103,16 @@ export function createToolRegistry(
   if (options?.browserSessionManager && options.browserSessionId) {
     const browserSessionManager = options.browserSessionManager;
     const browserSessionId = options.browserSessionId;
+    const browserRuntime =
+      (browserSessionManager as { constructor?: { name?: string } }).constructor
+        ?.name === "ElectronBrowserAdapter"
+        ? "built-in Electron WebView with direct DOM access"
+        : "managed Chromium automation session with Playwright and a persisted profile";
 
     browserTools.push(
       {
         name: "browser_open",
-        description: "Open or reuse a managed Chromium browser session for this operator. Uses Playwright with a persisted automation profile. If the result reports requiresDesktopActions=true, switch to desktop_actions.",
+        description: `Open or reuse the browser runtime for this operator. Current runtime: ${browserRuntime}. If the result reports requiresDesktopActions=true, switch to desktop_actions.`,
         parameters: {
           type: "object",
           additionalProperties: false,
@@ -124,7 +129,7 @@ export function createToolRegistry(
       },
       {
         name: "browser_tabs",
-        description: "List, open, switch, or close browser tabs in the managed Chromium session.",
+        description: "List, open, switch, or close tabs in the current browser runtime.",
         parameters: {
           type: "object",
           additionalProperties: false,
@@ -160,7 +165,7 @@ export function createToolRegistry(
       },
       {
         name: "browser_snapshot",
-        description: "Inspect the active page using DOM data. Returns tabs, page metadata, actionable elements, and an optional text preview. If the result falls back to visual mode, continue with desktop_actions.",
+        description: "Inspect the active page using DOM data. Returns tabs, page metadata, actionable elements, and an optional text preview. In desktop Electron mode this reads the built-in WebView DOM directly. If the result falls back to visual mode, continue with desktop_actions.",
         parameters: {
           type: "object",
           additionalProperties: false,
@@ -283,7 +288,7 @@ export function createToolRegistry(
       },
       {
         name: "browser_read",
-        description: "Read visible text from the page or a specific selector in the active browser tab.",
+        description: "Read DOM text from the whole page or a specific selector in the active browser tab. Use this when you need the page's actual text content instead of relying on screenshots.",
         parameters: {
           type: "object",
           additionalProperties: false,

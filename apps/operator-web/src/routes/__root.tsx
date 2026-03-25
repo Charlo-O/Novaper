@@ -1,5 +1,5 @@
 import * as React from 'react';
-import { Outlet, createRootRoute } from '@tanstack/react-router';
+import { Outlet, createRootRoute, useNavigate } from '@tanstack/react-router';
 import { TanStackRouterDevtools } from '@tanstack/react-router-devtools';
 import { getStatus, checkVersion, type VersionCheckResponse } from '../api';
 import { Separator } from '@/components/ui/separator';
@@ -9,6 +9,7 @@ import { Github, Globe, Menu } from 'lucide-react';
 import { useLocale, useTranslation } from '../lib/i18n-context';
 import { ThemeToggle } from '../components/ThemeToggle';
 import { NavigationSidebar } from '../components/NavigationSidebar';
+import { useElectron } from '../hooks/useElectron';
 
 export const Route = createRootRoute({
   component: RootComponent,
@@ -178,9 +179,24 @@ function Footer() {
 }
 
 function RootComponent() {
+  const navigate = useNavigate();
+  const { api, isElectron } = useElectron();
+
   const toggleNavigation = () => {
     window.dispatchEvent(new CustomEvent('novaper:toggle-navigation'));
   };
+
+  React.useEffect(() => {
+    if (!isElectron || !api) {
+      return;
+    }
+
+    return api.onWebviewShow(() => {
+      if (window.location.pathname !== '/browser') {
+        void navigate({ to: '/browser' });
+      }
+    });
+  }, [api, isElectron, navigate]);
 
   return (
     <div className="h-screen flex flex-col overflow-hidden">
@@ -190,7 +206,7 @@ function RootComponent() {
           variant="ghost"
           size="icon-sm"
           onClick={toggleNavigation}
-          className="h-9 w-9 rounded-full"
+          className="h-9 w-9 rounded-full text-slate-700 hover:bg-slate-100 hover:text-slate-950 dark:text-slate-200 dark:hover:bg-slate-800 dark:hover:text-white"
           title="Toggle navigation"
           aria-label="Toggle navigation"
         >

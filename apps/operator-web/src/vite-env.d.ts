@@ -4,6 +4,19 @@ declare const __BACKEND_VERSION__: string;
 
 /** Electron preload API — only available when running inside the Electron shell. */
 interface ElectronAPI {
+  getWebviewState: (id: string) => Promise<{
+    id: string;
+    url: string;
+    title: string;
+    canGoBack: boolean;
+    canGoForward: boolean;
+    isLoading: boolean;
+    isShow: boolean;
+  } | null>;
+  navigateWebview: (id: string, url: string) => Promise<any>;
+  goBackWebview: (id: string) => Promise<any>;
+  goForwardWebview: (id: string) => Promise<any>;
+  reloadWebview: (id: string) => Promise<any>;
   closeWindow: () => void;
   minimizeWindow: () => void;
   toggleMaximizeWindow: () => void;
@@ -38,6 +51,8 @@ interface ElectronAPI {
   restartApp: () => void;
   getPlatform: () => string;
   onWebviewNavigated: (callback: (id: string, url: string) => void) => () => void;
+  onWebviewShow: (callback: (id: string) => void) => () => void;
+  onWebviewHide: (callback: (id: string) => void) => () => void;
   onUrlUpdated: (callback: (url: string) => void) => () => void;
   onProtocolUrl: (callback: (url: string) => void) => () => void;
   onBackendReady: (callback: (data: { success: boolean; port?: number; error?: string }) => void) => () => void;

@@ -530,7 +530,7 @@ type QrSession = {
   cancelled: boolean;
 };
 
-type SessionMode = 'classic' | 'layered';
+export type SessionMode = 'classic' | 'layered';
 
 type LiveEventRecord = {
   id: string;
@@ -586,6 +586,17 @@ const liveSessionIds: Record<SessionMode, string | null> = {
 };
 let classicChatToken = 0;
 let layeredChatToken = 0;
+
+function emitLiveSessionChanged(mode: SessionMode, sessionId: string | null) {
+  if (!hasWindow()) {
+    return;
+  }
+  window.dispatchEvent(
+    new CustomEvent('novaper-live-session-changed', {
+      detail: { mode, sessionId },
+    })
+  );
+}
 
 function hasWindow() {
   return typeof window !== 'undefined';
@@ -1020,6 +1031,7 @@ async function ensureLiveSession(
     }),
   });
   liveSessionIds[mode] = session.id;
+  emitLiveSessionChanged(mode, session.id);
   return session.id;
 }
 
@@ -1042,6 +1054,11 @@ async function observeLiveDesktop() {
 
 function clearLiveSession(mode: SessionMode) {
   liveSessionIds[mode] = null;
+  emitLiveSessionChanged(mode, null);
+}
+
+export function getLiveSessionId(mode: SessionMode): string | null {
+  return liveSessionIds[mode];
 }
 
 function createHistoryRecord(
@@ -1213,7 +1230,7 @@ export function sendMessageStream(
   onDone: (event: DoneEvent) => void,
   onError: (event: ErrorEvent) => void,
   onCancelled?: (event: CancelledEvent) => void
-): { close: () => void } {
+): { close: () => void; sessionIdPromise: Promise<string | null> } {
   const runId = ++classicChatToken;
   const createdAt = nowIso();
   const serial = getDeviceSerial(deviceId);
@@ -1430,7 +1447,7 @@ export function sendMessageStream(
     }
   };
 
-  void (async () => {
+  const sessionIdPromise = (async () => {
     try {
       const authProvider = await resolvePreferredAuthProvider('classic');
       const model = getConfiguredModel('classic');
@@ -1477,8 +1494,10 @@ export function sendMessageStream(
           ...customApi,
         }),
       });
+      return sessionId;
     } catch (error) {
       finishWithError(getErrorMessage(error), false);
+      return null;
     }
   })();
 
@@ -1490,6 +1509,7 @@ export function sendMessageStream(
       closed = true;
       closeStream();
     },
+    sessionIdPromise,
   };
 }
 
@@ -1832,7 +1852,7 @@ export function sendLayeredMessageStream(
     onDone: (event: LayeredDoneEvent) => void;
     onError: (event: LayeredErrorEvent) => void;
   }
-): { close: () => void } {
+): { close: () => void; sessionIdPromise: Promise<string | null> } {
   const runId = ++layeredChatToken;
   const createdAt = nowIso();
   const serial = getDeviceSerial(deviceId);
@@ -2006,7 +2026,7 @@ export function sendLayeredMessageStream(
     }
   };
 
-  void (async () => {
+  const sessionIdPromise = (async () => {
     try {
       const authProvider = await resolvePreferredAuthProvider('layered');
       const model = getConfiguredModel('layered');
@@ -2053,8 +2073,10 @@ export function sendLayeredMessageStream(
           ...customApi,
         }),
       });
+      return sessionId;
     } catch (error) {
       finishWithError(getErrorMessage(error));
+      return null;
     }
   })();
 
@@ -2066,6 +2088,7 @@ export function sendLayeredMessageStream(
       closed = true;
       closeStream();
     },
+    sessionIdPromise,
   };
 }
 

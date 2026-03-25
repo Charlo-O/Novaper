@@ -22,10 +22,15 @@ const VITE_DEV_SERVER_URL = process.env.VITE_DEV_SERVER_URL;
 // ==================== state ====================
 let win: BrowserWindow | null = null;
 let webViewManager: WebViewManager | null = null;
-let profileManager: ProfileManager | null = null;
+const profileManager = new ProfileManager(path.join(app.getPath("userData"), "novaper-data"));
 let backendPort: number = 3333;
 const userData = app.getPath("userData");
 const novaperDataDir = path.join(userData, "novaper-data");
+const RENDERER_LOAD_RETRY_MS = 500;
+const RENDERER_LOAD_MAX_ATTEMPTS = 60;
+const sessionDataBootstrapPromise = profileManager.prepareSessionData();
+
+app.setPath("sessionData", profileManager.getSessionDataDir());
 
 // ==================== logging ====================
 log.transports.file.level = "info";
@@ -65,6 +70,10 @@ function handleProtocolUrl(url: string) {
   if (win && !win.isDestroyed()) {
     win.webContents.send("protocol-url", url);
   }
+}
+
+function sleep(ms: number) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 // ==================== port finding ====================
@@ -149,20 +158,52 @@ async function createWindow() {
     rendererUrl: VITE_DEV_SERVER_URL || RENDERER_DIST,
   });
 
+  let didShowWindow = false;
+  const showMainWindow = () => {
+    if (!win || win.isDestroyed() || didShowWindow) {
+      return;
+    }
+    didShowWindow = true;
+    win.show();
+  };
+
   webViewManager = new WebViewManager(win);
-  profileManager = new ProfileManager(novaperDataDir);
+
+  // Register visibility hooks before loading content so we don't miss
+  // ready-to-show on fast renderer startups.
+  win.once("ready-to-show", showMainWindow);
+  win.webContents.once("did-finish-load", showMainWindow);
+  setTimeout(showMainWindow, 2000);
 
   // Load content
   if (VITE_DEV_SERVER_URL) {
-    win.loadURL(VITE_DEV_SERVER_URL);
+    let loaded = false;
+    let lastError: unknown;
+    for (let attempt = 1; attempt <= RENDERER_LOAD_MAX_ATTEMPTS; attempt++) {
+      try {
+        await win.loadURL(VITE_DEV_SERVER_URL);
+        loaded = true;
+        break;
+      } catch (error) {
+        lastError = error;
+        log.warn(
+          `[Renderer] Failed to load ${VITE_DEV_SERVER_URL} (attempt ${attempt}/${RENDERER_LOAD_MAX_ATTEMPTS}): ${
+            error instanceof Error ? error.message : String(error)
+          }`
+        );
+        if (attempt < RENDERER_LOAD_MAX_ATTEMPTS) {
+          await sleep(RENDERER_LOAD_RETRY_MS);
+        }
+      }
+    }
+    if (!loaded) {
+      throw lastError instanceof Error
+        ? lastError
+        : new Error(`Failed to load renderer from ${VITE_DEV_SERVER_URL}`);
+    }
   } else {
-    win.loadFile(path.join(RENDERER_DIST, "index.html"));
+    await win.loadFile(path.join(RENDERER_DIST, "index.html"));
   }
-
-  // Show window when ready
-  win.once("ready-to-show", () => {
-    win?.show();
-  });
 
   // Open external links in browser
   win.webContents.setWindowOpenHandler(({ url }) => {
@@ -259,6 +300,21 @@ function registerIpcHandlers() {
   ipcMain.handle("get-show-webview", () =>
     webViewManager?.getShowWebview()
   );
+  ipcMain.handle("get-webview-state", (_event, id: string) =>
+    webViewManager?.getWebviewState(id)
+  );
+  ipcMain.handle("navigate-webview", (_event, id: string, url: string) =>
+    webViewManager?.navigateWebview(id, url)
+  );
+  ipcMain.handle("go-back-webview", (_event, id: string) =>
+    webViewManager?.goBackWebview(id)
+  );
+  ipcMain.handle("go-forward-webview", (_event, id: string) =>
+    webViewManager?.goForwardWebview(id)
+  );
+  ipcMain.handle("reload-webview", (_event, id: string) =>
+    webViewManager?.reloadWebview(id)
+  );
 
   // Profile IPC (Phase 2)
   ipcMain.handle("list-browser-profiles", () =>
@@ -335,6 +391,28 @@ app.whenReady().then(async () => {
 
   // Memory optimization
   app.commandLine.appendSwitch("js-flags", "--max-old-space-size=4096");
+
+  try {
+    const prepared = await sessionDataBootstrapPromise;
+    log.info(
+      `[Browser] Embedded session data ready at ${prepared.sessionDataDir} using partition ${prepared.partitionName}.`
+    );
+    if (prepared.activeProfile) {
+      log.info(
+        `[Browser] Active embedded browser profile: ${prepared.activeProfile}.`
+      );
+    }
+    if (
+      prepared.cookies?.sourceHadCookies &&
+      !prepared.cookies.partitionHasCookies
+    ) {
+      log.warn(
+        "[Browser] Source browser has a Cookies database, but it could not be copied into the embedded Electron session. Close the source browser once and restart Novaper for a full login-state sync."
+      );
+    }
+  } catch (error) {
+    log.warn("[Browser] Failed to prepare embedded browser session data:", error);
+  }
 
   setupUserAgentStripping();
   registerIpcHandlers();

@@ -33,6 +33,13 @@ contextBridge.exposeInMainWorld("electronAPI", {
   webviewDestroy: (id: string) => ipcRenderer.invoke("webview-destroy", id),
   setSize: (size: any) => ipcRenderer.invoke("set-size", size),
   getShowWebview: () => ipcRenderer.invoke("get-show-webview"),
+  getWebviewState: (id: string) => ipcRenderer.invoke("get-webview-state", id),
+  navigateWebview: (id: string, url: string) =>
+    ipcRenderer.invoke("navigate-webview", id, url),
+  goBackWebview: (id: string) => ipcRenderer.invoke("go-back-webview", id),
+  goForwardWebview: (id: string) =>
+    ipcRenderer.invoke("go-forward-webview", id),
+  reloadWebview: (id: string) => ipcRenderer.invoke("reload-webview", id),
 
   // Browser profiles
   listBrowserProfiles: () => ipcRenderer.invoke("list-browser-profiles"),
@@ -73,6 +80,16 @@ contextBridge.exposeInMainWorld("electronAPI", {
       callback(id, url);
     ipcRenderer.on("webview-navigated", listener);
     return () => ipcRenderer.off("webview-navigated", listener);
+  },
+  onWebviewShow: (callback: (id: string) => void) => {
+    const listener = (_event: any, id: string) => callback(id);
+    ipcRenderer.on("webview-show", listener);
+    return () => ipcRenderer.off("webview-show", listener);
+  },
+  onWebviewHide: (callback: (id: string) => void) => {
+    const listener = (_event: any, id: string) => callback(id);
+    ipcRenderer.on("webview-hide", listener);
+    return () => ipcRenderer.off("webview-hide", listener);
   },
   onUrlUpdated: (callback: (url: string) => void) => {
     const listener = (_event: any, url: string) => callback(url);

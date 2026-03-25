@@ -302,6 +302,7 @@ export const zh = {
   navigation: {
     chat: '对话',
     workflows: 'Workflows',
+    browser: '内置浏览器',
     history: '历史记录',
     scheduledTasks: '定时任务',
     plugins: '插件',
