@@ -59,6 +59,10 @@ export class ElectronBrowserAdapter {
     this.wvm = webViewManager;
   }
 
+  describeRuntime() {
+    return "built-in Electron WebView with direct DOM access";
+  }
+
   // ─── helpers ───────────────────────────────────────────────────────
 
   private getWebContents(sessionId: string) {
@@ -103,16 +107,32 @@ export class ElectronBrowserAdapter {
   private async claimWebview(sessionId: string, url: string): Promise<string> {
     // Look for an inactive (unused) webview
     const allViews: Map<string, any> = (this.wvm as any).webViews;
+    const claimedBySession = new Set(this.sessions.values());
     let claimedId: string | null = null;
 
     for (const [id, info] of allViews.entries()) {
       if (
-        !info.isActive &&
-        !info.isShow &&
-        (info.currentUrl === "about:blank?use=0" || info.currentUrl === "about:blank")
+        !claimedBySession.has(id) &&
+        info.isShow &&
+        info.view?.webContents &&
+        !info.view.webContents.isDestroyed()
       ) {
         claimedId = id;
         break;
+      }
+    }
+
+    if (!claimedId) {
+      for (const [id, info] of allViews.entries()) {
+        if (
+          !claimedBySession.has(id) &&
+          !info.isActive &&
+          !info.isShow &&
+          (info.currentUrl === "about:blank?use=0" || info.currentUrl === "about:blank")
+        ) {
+          claimedId = id;
+          break;
+        }
       }
     }
 

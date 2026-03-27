@@ -64,9 +64,7 @@ export class ProfileManager {
       }
 
       const profilePath = path.join(this.profilesDir, entry.name);
-      const metadata = await loadProfileMetadata(
-        path.join(profilePath, PROFILE_METADATA_FILE)
-      );
+      const metadata = readStoredProfileMetadata(profilePath);
       if (!metadata) {
         continue;
       }

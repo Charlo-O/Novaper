@@ -12,6 +12,8 @@ export async function bootServer(opts?: {
   host?: string;
   rootDir?: string;
   userDataDir?: string;
+  browserRuntimeMode?: "electron" | "playwright" | "external_cdp";
+  webViewDebugBridge?: unknown;
   webViewManager?: unknown;
 }) {
   const port = opts?.port ?? Number(process.env.PORT ?? 3333);
@@ -38,6 +40,8 @@ export async function bootServer(opts?: {
     host,
     model,
     openAIApiKey: process.env.OPENAI_API_KEY,
+    browserRuntimeMode: opts?.browserRuntimeMode,
+    webViewDebugBridge: opts?.webViewDebugBridge,
     webViewManager: opts?.webViewManager,
   });
 

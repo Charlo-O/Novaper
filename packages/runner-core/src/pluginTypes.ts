@@ -50,13 +50,44 @@ export interface McpServerConfig {
   id: string;
   name: string;
   type: 'stdio' | 'sse' | 'http';
+  description?: string;
   command?: string;
   args?: string[];
   url?: string;
   env?: Record<string, string>;
   enabled: boolean;
+  builtin?: boolean;
+  fixed?: boolean;
   createdAt: number;
   updatedAt: number;
+}
+
+export const BUILTIN_BROWSER_MCP_SERVER_ID = 'builtin:browser-control';
+
+export const BUILTIN_BROWSER_MCP_SERVER: McpServerConfig = {
+  id: BUILTIN_BROWSER_MCP_SERVER_ID,
+  name: 'chrome-devtools-mcp',
+  description: 'Built-in browser control MCP used by Novaper for existing browser sessions.',
+  type: 'stdio',
+  command: 'npx',
+  args: [
+    '-y',
+    'chrome-devtools-mcp@latest',
+    '--autoConnect',
+    '--experimentalStructuredContent',
+    '--experimental-page-id-routing',
+  ],
+  enabled: true,
+  builtin: true,
+  fixed: true,
+  createdAt: 0,
+  updatedAt: 0,
+};
+
+export const BUILTIN_FIXED_MCP_SERVERS: McpServerConfig[] = [BUILTIN_BROWSER_MCP_SERVER];
+
+export function isBuiltinFixedMcpServerId(id: string): boolean {
+  return BUILTIN_FIXED_MCP_SERVERS.some((server) => server.id === id);
 }
 
 // ---------------------------------------------------------------------------

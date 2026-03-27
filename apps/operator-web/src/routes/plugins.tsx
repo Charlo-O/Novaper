@@ -577,6 +577,9 @@ function McpServersPage() {
   const openCreate = () => { setEditingServer(null); resetForm(); setDialogOpen(true); };
 
   const openEdit = (server: McpServerConfig) => {
+    if (server.fixed) {
+      return;
+    }
     setEditingServer(server);
     setName(server.name);
     setType(server.type);
@@ -612,6 +615,7 @@ function McpServersPage() {
   };
 
   const handleToggle = async (server: McpServerConfig) => {
+    if (server.fixed) return;
     await updateMcpServer(server.id, { enabled: !server.enabled });
     await refresh();
   };
@@ -660,17 +664,36 @@ function McpServersPage() {
                   <div className="flex-1 min-w-0 flex items-center gap-2">
                     <span className="text-sm font-medium truncate">{server.name}</span>
                     <Badge variant="outline" className="text-xs shrink-0">{server.type}</Badge>
+                    {server.builtin ? (
+                      <Badge variant="secondary" className="text-xs shrink-0">Built-in</Badge>
+                    ) : null}
+                    {server.fixed ? (
+                      <Badge variant="secondary" className="text-xs shrink-0">Fixed</Badge>
+                    ) : null}
                   </div>
                   <div className="flex items-center gap-2 ml-4">
-                    <Switch checked={server.enabled} onCheckedChange={() => handleToggle(server)} />
-                    <Button variant="ghost" size="icon" className="h-8 w-8" onClick={() => openEdit(server)}>
-                      <Edit className="w-4 h-4" />
-                    </Button>
-                    <Button variant="ghost" size="icon" className="h-8 w-8 text-red-500 hover:text-red-600" onClick={() => setDeleteId(server.id)}>
-                      <Trash2 className="w-4 h-4" />
-                    </Button>
+                    <Switch
+                      checked={server.enabled}
+                      disabled={server.fixed}
+                      onCheckedChange={() => handleToggle(server)}
+                    />
+                    {!server.fixed ? (
+                      <Button variant="ghost" size="icon" className="h-8 w-8" onClick={() => openEdit(server)}>
+                        <Edit className="w-4 h-4" />
+                      </Button>
+                    ) : null}
+                    {!server.fixed ? (
+                      <Button variant="ghost" size="icon" className="h-8 w-8 text-red-500 hover:text-red-600" onClick={() => setDeleteId(server.id)}>
+                        <Trash2 className="w-4 h-4" />
+                      </Button>
+                    ) : null}
                   </div>
                 </div>
+                {server.description ? (
+                  <p className="text-xs text-slate-500 dark:text-slate-400 mt-1">
+                    {server.description}
+                  </p>
+                ) : null}
                 <p className="text-xs text-slate-500 dark:text-slate-400 font-mono truncate mt-1">
                   {server.type === 'stdio' ? `${server.command} ${server.args?.join(' ') ?? ''}` : server.url}
                 </p>

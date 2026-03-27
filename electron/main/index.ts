@@ -12,6 +12,10 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import { createWindowManager } from "./windowManager.js";
 import { WebViewManager } from "./webviewManager.js";
 import { ProfileManager } from "./profileManager.js";
+import {
+  DEFAULT_REMOTE_DEBUG_PORT,
+  WebViewDebugBridge,
+} from "./webviewDebugBridge.js";
 
 // ==================== paths ====================
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -22,6 +26,7 @@ const VITE_DEV_SERVER_URL = process.env.VITE_DEV_SERVER_URL;
 // ==================== state ====================
 let win: BrowserWindow | null = null;
 let webViewManager: WebViewManager | null = null;
+let webViewDebugBridge: WebViewDebugBridge | null = null;
 const profileManager = new ProfileManager(path.join(app.getPath("userData"), "novaper-data"));
 let backendPort: number = 3333;
 const userData = app.getPath("userData");
@@ -29,6 +34,20 @@ const novaperDataDir = path.join(userData, "novaper-data");
 const RENDERER_LOAD_RETRY_MS = 500;
 const RENDERER_LOAD_MAX_ATTEMPTS = 60;
 const sessionDataBootstrapPromise = profileManager.prepareSessionData();
+const configuredRemoteDebuggingPort = Number(
+  process.env.NOVAPER_REMOTE_DEBUG_PORT ?? DEFAULT_REMOTE_DEBUG_PORT
+);
+const remoteDebuggingPort =
+  Number.isFinite(configuredRemoteDebuggingPort) &&
+  configuredRemoteDebuggingPort > 0
+    ? configuredRemoteDebuggingPort
+    : DEFAULT_REMOTE_DEBUG_PORT;
+
+app.commandLine.appendSwitch("js-flags", "--max-old-space-size=4096");
+app.commandLine.appendSwitch(
+  "remote-debugging-port",
+  String(remoteDebuggingPort)
+);
 
 app.setPath("sessionData", profileManager.getSessionDataDir());
 
@@ -127,6 +146,9 @@ async function bootBackend(): Promise<number> {
         ? path.join((process as any).resourcesPath, "app")
         : path.resolve(MAIN_DIST, "../.."),
       userDataDir: novaperDataDir,
+      browserRuntimeMode:
+        process.env.NOVAPER_BROWSER_RUNTIME === "electron" ? "electron" : "external_cdp",
+      webViewDebugBridge: webViewDebugBridge ?? undefined,
       webViewManager: webViewManager ?? undefined,
     });
     log.info(`[Backend] Express server ready on port ${port}`);
@@ -168,6 +190,9 @@ async function createWindow() {
   };
 
   webViewManager = new WebViewManager(win);
+  webViewDebugBridge = new WebViewDebugBridge(webViewManager, {
+    remoteDebuggingPort,
+  });
 
   // Register visibility hooks before loading content so we don't miss
   // ready-to-show on fast renderer startups.
@@ -217,6 +242,7 @@ async function createWindow() {
     win = null;
     webViewManager?.destroy();
     webViewManager = null;
+    webViewDebugBridge = null;
   });
 }
 
@@ -252,6 +278,9 @@ function registerIpcHandlers() {
     const fs = await import("node:fs/promises");
     return fs.readFile(filePath, "utf-8");
   });
+  ipcMain.handle("open-external-url", async (_event, url: string) =>
+    shell.openExternal(url)
+  );
 
   // Log export
   ipcMain.handle("export-log", async () => {
@@ -314,6 +343,21 @@ function registerIpcHandlers() {
   );
   ipcMain.handle("reload-webview", (_event, id: string) =>
     webViewManager?.reloadWebview(id)
+  );
+  ipcMain.handle("get-browser-debug-status", () =>
+    webViewDebugBridge?.getStatus() ?? {
+      bridgeEnabled: false,
+      defaultTargetId: null,
+      inspectBaseUrl: `http://127.0.0.1:${remoteDebuggingPort}`,
+      inspectTargetsUrl: `http://127.0.0.1:${remoteDebuggingPort}/json`,
+      remoteDebuggingPort,
+      targetCount: 0,
+      targets: [],
+      transport: "electron-debugger",
+    }
+  );
+  ipcMain.handle("open-browser-devtools", (_event, id?: string) =>
+    webViewDebugBridge?.openDevTools(id)
   );
 
   // Profile IPC (Phase 2)
@@ -388,9 +432,9 @@ function registerIpcHandlers() {
 // ==================== app lifecycle ====================
 app.whenReady().then(async () => {
   log.info("[App] Novaper starting...");
-
-  // Memory optimization
-  app.commandLine.appendSwitch("js-flags", "--max-old-space-size=4096");
+  log.info(
+    `[Browser] Remote debugging enabled at http://127.0.0.1:${remoteDebuggingPort}/json`
+  );
 
   try {
     const prepared = await sessionDataBootstrapPromise;

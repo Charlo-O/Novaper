@@ -2434,11 +2434,14 @@ export interface McpServerConfig {
   id: string;
   name: string;
   type: 'stdio' | 'sse' | 'http';
+  description?: string;
   command?: string;
   args?: string[];
   url?: string;
   env?: Record<string, string>;
   enabled: boolean;
+  builtin?: boolean;
+  fixed?: boolean;
   createdAt: number;
   updatedAt: number;
 }

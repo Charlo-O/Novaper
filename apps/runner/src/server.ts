@@ -41,7 +41,7 @@ import { AutomationStore } from "./automationStore.js";
 import type { RecordedAction } from "./automationStore.js";
 import { replayWorkflow, getReplayProgress, stopReplay as stopReplayEngine } from "../../../packages/runner-core/src/workflowReplayer.js";
 import { DeviceStore, type StoredDeviceRecord } from "./deviceStore.js";
-import { PluginStore } from "./pluginStore.js";
+import { FixedMcpServerError, PluginStore } from "./pluginStore.js";
 import type { ResponsesClient } from "../../../packages/runner-core/src/responsesClient.js";
 
 function normalizeRequestedProvider(input: unknown) {
@@ -294,7 +294,7 @@ function evaluateTaskVerification(task: TaskPlanItem, toolCalls: DesktopAgentToo
     }
 
     if ((call.name === "browser_snapshot" || call.name === "browser_read" || call.name === "browser_wait_for") && isRecord(result)) {
-      if (result.strategy === "playwright" || result.strategy === "electron") {
+      if (result.strategy === "playwright" || result.strategy === "electron" || result.strategy === "cdp" || result.strategy === "chrome-mcp") {
         browserVerified = true;
         evidence.push(`browser state verified via ${call.name}`);
       }
@@ -350,12 +350,14 @@ function evaluateTaskVerification(task: TaskPlanItem, toolCalls: DesktopAgentToo
 function buildLiveDeveloperPrompt(options?: {
   capabilityBrief?: string;
   skills?: PromptSkill[];
-  browserRuntime?: "electron" | "playwright";
+  browserRuntime?: "electron" | "playwright" | "external_cdp";
 }) {
   const browserRuntime =
     options?.browserRuntime === "electron"
       ? "The browser_* tools use the built-in Electron WebView with direct DOM access."
-      : "The browser_* tools use Playwright with a persisted automation profile copied from the local Chromium profile.";
+      : options?.browserRuntime === "external_cdp"
+        ? "The browser_* tools prefer attaching to the user's real Chrome/Edge session over CDP, and fall back to Playwright with a copied Chromium profile only when no external CDP endpoint is available."
+        : "The browser_* tools use Playwright with a persisted automation profile copied from the local Chromium profile.";
   const sections = [
     [
       "You are a live Windows desktop assistant similar to an interactive computer-use operator.",
@@ -367,7 +369,7 @@ function buildLiveDeveloperPrompt(options?: {
       "When the task is happening inside a web page, use browser_snapshot before interacting and prefer browser_click, browser_type, browser_press_keys, browser_tabs, and browser_read over desktop clicks.",
       browserRuntime,
       "If any browser_* result reports strategy='visual' or requiresDesktopActions=true, stop relying on DOM selectors and continue with desktop_actions against the attached desktop screenshot.",
-      "If a browser_* result reports strategy='electron' or strategy='playwright', stay in the DOM/browser tool path and do not switch back to coordinate clicks unless the page stops responding.",
+      "If a browser_* result reports strategy='electron', strategy='playwright', strategy='cdp', or strategy='chrome-mcp', stay in the DOM/browser tool path and do not switch back to coordinate clicks unless the page stops responding.",
       "Never claim a desktop task is complete until you have used at least one tool during the current instruction.",
       "Never claim success for opening an app unless a process or window check confirms the target exists.",
       "Never claim success for search, playback, sending, or navigation tasks unless the post-action state visibly confirms the requested outcome.",
@@ -432,6 +434,8 @@ export async function createServer(config: {
   host: string;
   model: string;
   openAIApiKey?: string;
+  browserRuntimeMode?: "electron" | "playwright" | "external_cdp";
+  webViewDebugBridge?: unknown;
   webViewManager?: unknown;
 }) {
   const app = express();
@@ -440,8 +444,11 @@ export async function createServer(config: {
   const liveStore = new LiveSessionStore(path.join(config.rootDir, "data", "live-sessions"));
   const sidecar = new DesktopSidecar();
   const authService = new AuthService(config.rootDir, config.openAIApiKey);
+  const browserRuntimeMode =
+    config.browserRuntimeMode ??
+    (config.webViewManager ? "external_cdp" : "playwright");
   let browserSessionManager: any;
-  if (config.webViewManager) {
+  if (browserRuntimeMode === "electron" && config.webViewManager) {
     const { ElectronBrowserAdapter } = await import(
       "../../../electron/main/electronBrowserAdapter.js"
     );
@@ -450,8 +457,30 @@ export async function createServer(config: {
     browserSessionManager = new BrowserSessionManager({
       rootDir: config.rootDir,
       sidecar,
+      preferredMode: browserRuntimeMode === "external_cdp" ? "external_cdp" : "playwright",
     });
   }
+  const webViewDebugBridge = config.webViewDebugBridge as
+    | {
+        back: (targetId?: string) => Promise<unknown>;
+        click: (targetId: string | undefined, selector: string) => Promise<unknown>;
+        clickAt: (targetId: string | undefined, selector: string) => Promise<unknown>;
+        closeTarget: (targetId?: string) => Promise<unknown>;
+        createTarget: (args?: { id?: string; show?: boolean; url?: string }) => Promise<unknown>;
+        evaluate: (targetId: string | undefined, expression: string) => Promise<unknown>;
+        getInfo: (targetId?: string) => Promise<unknown>;
+        getStatus: () => unknown;
+        listTargets: () => unknown;
+        navigate: (targetId: string | undefined, url: string) => Promise<unknown>;
+        openDevTools: (targetId?: string) => Promise<unknown>;
+        screenshot: (targetId?: string) => Promise<{ buffer: Buffer; mimeType: string }>;
+        scroll: (
+          targetId: string | undefined,
+          args?: { direction?: "up" | "down" | "top" | "bottom"; y?: number }
+        ) => Promise<unknown>;
+        setFiles: (targetId: string | undefined, selector: string, files: string[]) => Promise<unknown>;
+      }
+    | undefined;
   const automationStore = new AutomationStore(path.join(config.rootDir, "data", "automation"));
   const deviceStore = new DeviceStore(path.join(config.rootDir, "data", "devices"));
   const pluginStore = new PluginStore(config.rootDir);
@@ -491,6 +520,17 @@ export async function createServer(config: {
 
   const runningScheduledTasks = new Set<string>();
   const automationBaseUrl = `http://${config.host === "0.0.0.0" ? "127.0.0.1" : config.host}:${config.port}`;
+
+  function getEmbeddedBrowserDebugBridge(response: express.Response) {
+    if (!webViewDebugBridge) {
+      response.status(501).json({
+        error:
+          "Embedded browser debug bridge is only available inside the Electron desktop app.",
+      });
+      return null;
+    }
+    return webViewDebugBridge;
+  }
 
   function mapDeviceRecord(device: StoredDeviceRecord) {
     const now = Date.now();
@@ -671,15 +711,265 @@ export async function createServer(config: {
   }
 
   app.get("/api/system/health", async (_request, response) => {
+    const browserRuntime =
+      typeof (browserSessionManager as { refreshRuntimeStatus?: () => Promise<unknown> }).refreshRuntimeStatus === "function"
+        ? await (browserSessionManager as { refreshRuntimeStatus: () => Promise<unknown> }).refreshRuntimeStatus()
+        : typeof (browserSessionManager as { getRuntimeStatus?: () => unknown }).getRuntimeStatus === "function"
+          ? (browserSessionManager as { getRuntimeStatus: () => unknown }).getRuntimeStatus()
+          : null;
     const [heartbeat, auth] = await Promise.all([sidecar.heartbeat(), authService.getStatus()]);
     response.json({
       ok: true,
       version: "0.1.0",
+      browserDebug: webViewDebugBridge?.getStatus() ?? null,
+      browserRuntime,
       machine: heartbeat,
       scenarios: scenarios.length,
       auth,
       proxy: getProxyStatus(),
     });
+  });
+
+  app.get("/api/browser/runtime/status", async (_request, response) => {
+    if (
+      typeof (browserSessionManager as { refreshRuntimeStatus?: () => Promise<unknown> }).refreshRuntimeStatus !== "function" &&
+      typeof (browserSessionManager as { getRuntimeStatus?: () => unknown }).getRuntimeStatus !== "function"
+    ) {
+      response.status(404).json({ error: "Browser runtime status is unavailable." });
+      return;
+    }
+    if (typeof (browserSessionManager as { refreshRuntimeStatus?: () => Promise<unknown> }).refreshRuntimeStatus === "function") {
+      response.json(
+        await (browserSessionManager as { refreshRuntimeStatus: () => Promise<unknown> }).refreshRuntimeStatus()
+      );
+      return;
+    }
+    response.json((browserSessionManager as { getRuntimeStatus: () => unknown }).getRuntimeStatus());
+  });
+
+  app.get("/api/browser/debug/status", (_request, response) => {
+    const bridge = getEmbeddedBrowserDebugBridge(response);
+    if (!bridge) {
+      return;
+    }
+    response.json(bridge.getStatus());
+  });
+
+  app.get("/api/browser/debug/targets", (_request, response) => {
+    const bridge = getEmbeddedBrowserDebugBridge(response);
+    if (!bridge) {
+      return;
+    }
+    response.json({
+      targets: bridge.listTargets(),
+    });
+  });
+
+  app.post("/api/browser/debug/targets", async (request, response) => {
+    const bridge = getEmbeddedBrowserDebugBridge(response);
+    if (!bridge) {
+      return;
+    }
+    try {
+      response.json(
+        await bridge.createTarget({
+          id:
+            request.body?.id == null ? undefined : String(request.body.id).trim() || undefined,
+          show: request.body?.show === true,
+          url:
+            request.body?.url == null
+              ? undefined
+              : String(request.body.url).trim() || undefined,
+        })
+      );
+    } catch (error) {
+      response.status(400).json({ error: summarizeError(error) });
+    }
+  });
+
+  app.get("/api/browser/debug/targets/:id", async (request, response) => {
+    const bridge = getEmbeddedBrowserDebugBridge(response);
+    if (!bridge) {
+      return;
+    }
+    try {
+      response.json(await bridge.getInfo(String(request.params.id ?? "").trim()));
+    } catch (error) {
+      response.status(404).json({ error: summarizeError(error) });
+    }
+  });
+
+  app.delete("/api/browser/debug/targets/:id", async (request, response) => {
+    const bridge = getEmbeddedBrowserDebugBridge(response);
+    if (!bridge) {
+      return;
+    }
+    try {
+      response.json(await bridge.closeTarget(String(request.params.id ?? "").trim()));
+    } catch (error) {
+      response.status(404).json({ error: summarizeError(error) });
+    }
+  });
+
+  app.post("/api/browser/debug/targets/:id/devtools", async (request, response) => {
+    const bridge = getEmbeddedBrowserDebugBridge(response);
+    if (!bridge) {
+      return;
+    }
+    try {
+      response.json(await bridge.openDevTools(String(request.params.id ?? "").trim()));
+    } catch (error) {
+      response.status(404).json({ error: summarizeError(error) });
+    }
+  });
+
+  app.post("/api/browser/debug/targets/:id/navigate", async (request, response) => {
+    const bridge = getEmbeddedBrowserDebugBridge(response);
+    if (!bridge) {
+      return;
+    }
+    const url = String(request.body?.url ?? "").trim();
+    if (!url) {
+      response.status(400).json({ error: "url is required." });
+      return;
+    }
+    try {
+      response.json(await bridge.navigate(String(request.params.id ?? "").trim(), url));
+    } catch (error) {
+      response.status(400).json({ error: summarizeError(error) });
+    }
+  });
+
+  app.post("/api/browser/debug/targets/:id/back", async (request, response) => {
+    const bridge = getEmbeddedBrowserDebugBridge(response);
+    if (!bridge) {
+      return;
+    }
+    try {
+      response.json(await bridge.back(String(request.params.id ?? "").trim()));
+    } catch (error) {
+      response.status(400).json({ error: summarizeError(error) });
+    }
+  });
+
+  app.post("/api/browser/debug/targets/:id/eval", async (request, response) => {
+    const bridge = getEmbeddedBrowserDebugBridge(response);
+    if (!bridge) {
+      return;
+    }
+    const expression = String(request.body?.expression ?? "").trim();
+    if (!expression) {
+      response.status(400).json({ error: "expression is required." });
+      return;
+    }
+    try {
+      response.json(
+        await bridge.evaluate(String(request.params.id ?? "").trim(), expression)
+      );
+    } catch (error) {
+      response.status(400).json({ error: summarizeError(error) });
+    }
+  });
+
+  app.post("/api/browser/debug/targets/:id/click", async (request, response) => {
+    const bridge = getEmbeddedBrowserDebugBridge(response);
+    if (!bridge) {
+      return;
+    }
+    const selector = String(request.body?.selector ?? "").trim();
+    if (!selector) {
+      response.status(400).json({ error: "selector is required." });
+      return;
+    }
+    try {
+      response.json(await bridge.click(String(request.params.id ?? "").trim(), selector));
+    } catch (error) {
+      response.status(400).json({ error: summarizeError(error) });
+    }
+  });
+
+  app.post("/api/browser/debug/targets/:id/click-at", async (request, response) => {
+    const bridge = getEmbeddedBrowserDebugBridge(response);
+    if (!bridge) {
+      return;
+    }
+    const selector = String(request.body?.selector ?? "").trim();
+    if (!selector) {
+      response.status(400).json({ error: "selector is required." });
+      return;
+    }
+    try {
+      response.json(
+        await bridge.clickAt(String(request.params.id ?? "").trim(), selector)
+      );
+    } catch (error) {
+      response.status(400).json({ error: summarizeError(error) });
+    }
+  });
+
+  app.post("/api/browser/debug/targets/:id/files", async (request, response) => {
+    const bridge = getEmbeddedBrowserDebugBridge(response);
+    if (!bridge) {
+      return;
+    }
+    const selector = String(request.body?.selector ?? "").trim();
+    const files = Array.isArray(request.body?.files)
+      ? request.body.files
+          .map((entry: unknown) => String(entry ?? "").trim())
+          .filter(Boolean)
+      : [];
+    if (!selector || files.length === 0) {
+      response.status(400).json({
+        error: "selector and a non-empty files array are required.",
+      });
+      return;
+    }
+    try {
+      response.json(
+        await bridge.setFiles(String(request.params.id ?? "").trim(), selector, files)
+      );
+    } catch (error) {
+      response.status(400).json({ error: summarizeError(error) });
+    }
+  });
+
+  app.post("/api/browser/debug/targets/:id/scroll", async (request, response) => {
+    const bridge = getEmbeddedBrowserDebugBridge(response);
+    if (!bridge) {
+      return;
+    }
+    const direction =
+      request.body?.direction === "up" ||
+      request.body?.direction === "down" ||
+      request.body?.direction === "top" ||
+      request.body?.direction === "bottom"
+        ? request.body.direction
+        : undefined;
+    const rawY = Number(request.body?.y ?? request.body?.deltaY ?? 3000);
+    try {
+      response.json(
+        await bridge.scroll(String(request.params.id ?? "").trim(), {
+          direction,
+          y: Number.isFinite(rawY) ? rawY : 3000,
+        })
+      );
+    } catch (error) {
+      response.status(400).json({ error: summarizeError(error) });
+    }
+  });
+
+  app.get("/api/browser/debug/targets/:id/screenshot", async (request, response) => {
+    const bridge = getEmbeddedBrowserDebugBridge(response);
+    if (!bridge) {
+      return;
+    }
+    try {
+      const screenshot = await bridge.screenshot(String(request.params.id ?? "").trim());
+      response.setHeader("Content-Type", screenshot.mimeType);
+      response.end(screenshot.buffer);
+    } catch (error) {
+      response.status(400).json({ error: summarizeError(error) });
+    }
   });
 
   app.get("/api/system/capabilities", async (_request, response) => {
@@ -1612,13 +1902,13 @@ export async function createServer(config: {
           buildLiveDeveloperPrompt({
             capabilityBrief: capabilityContext.capabilityBrief,
             skills: capabilityContext.skills,
-            browserRuntime: config.webViewManager ? "electron" : "playwright",
+            browserRuntime: browserRuntimeMode,
           }),
           updated.agentConfig,
         );
         const verificationPrompt = agentDriver.buildDeveloperPrompt(
           buildLiveDeveloperPrompt({
-            browserRuntime: config.webViewManager ? "electron" : "playwright",
+            browserRuntime: browserRuntimeMode,
           }),
           updated.agentConfig,
         );
@@ -2413,34 +2703,53 @@ export async function createServer(config: {
       response.status(400).json({ error: "name and type are required." });
       return;
     }
-    const server = await pluginStore.createMcpServer({
-      name: String(name),
-      type: type as "stdio" | "sse" | "http",
-      command: command ? String(command) : undefined,
-      args: Array.isArray(args) ? args.map(String) : undefined,
-      url: url ? String(url) : undefined,
-      env: env && typeof env === "object" ? env : undefined,
-      enabled: Boolean(enabled ?? true),
-    });
-    response.status(201).json(server);
+    try {
+      const server = await pluginStore.createMcpServer({
+        name: String(name),
+        type: type as "stdio" | "sse" | "http",
+        description: typeof request.body?.description === "string" ? String(request.body.description) : undefined,
+        command: command ? String(command) : undefined,
+        args: Array.isArray(args) ? args.map(String) : undefined,
+        url: url ? String(url) : undefined,
+        env: env && typeof env === "object" ? env : undefined,
+        enabled: Boolean(enabled ?? true),
+      });
+      response.status(201).json(server);
+    } catch (error) {
+      response.status(error instanceof FixedMcpServerError ? 403 : 500).json({
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
   });
 
   app.put("/api/plugins/mcp-servers/:id", async (request, response) => {
-    const updated = await pluginStore.updateMcpServer(request.params.id, request.body ?? {});
-    if (!updated) {
-      response.status(404).json({ error: "MCP server not found." });
-      return;
+    try {
+      const updated = await pluginStore.updateMcpServer(request.params.id, request.body ?? {});
+      if (!updated) {
+        response.status(404).json({ error: "MCP server not found." });
+        return;
+      }
+      response.json(updated);
+    } catch (error) {
+      response.status(error instanceof FixedMcpServerError ? 403 : 500).json({
+        error: error instanceof Error ? error.message : String(error),
+      });
     }
-    response.json(updated);
   });
 
   app.delete("/api/plugins/mcp-servers/:id", async (request, response) => {
-    const deleted = await pluginStore.deleteMcpServer(request.params.id);
-    if (!deleted) {
-      response.status(404).json({ error: "MCP server not found." });
-      return;
+    try {
+      const deleted = await pluginStore.deleteMcpServer(request.params.id);
+      if (!deleted) {
+        response.status(404).json({ error: "MCP server not found." });
+        return;
+      }
+      response.json({ ok: true });
+    } catch (error) {
+      response.status(error instanceof FixedMcpServerError ? 403 : 500).json({
+        error: error instanceof Error ? error.message : String(error),
+      });
     }
-    response.json({ ok: true });
   });
 
   // ─── Catch-all SPA fallback ─────────────────────────────────────────

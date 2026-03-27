@@ -8,7 +8,11 @@ import type {
   InstalledSkill,
   McpServerConfig,
 } from "../../../packages/runner-core/src/pluginTypes.js";
-import { DEFAULT_SKILL_REPOS } from "../../../packages/runner-core/src/pluginTypes.js";
+import {
+  BUILTIN_FIXED_MCP_SERVERS,
+  DEFAULT_SKILL_REPOS,
+  isBuiltinFixedMcpServerId,
+} from "../../../packages/runner-core/src/pluginTypes.js";
 
 // ---------------------------------------------------------------------------
 // YAML front-matter parser (lightweight, no dependency)
@@ -40,6 +44,8 @@ function parseSkillMdFrontMatter(raw: string): { name: string; description: stri
 // ---------------------------------------------------------------------------
 // PluginStore
 // ---------------------------------------------------------------------------
+
+export class FixedMcpServerError extends Error {}
 
 export class PluginStore {
   private readonly pluginsDir: string;
@@ -318,16 +324,30 @@ export class PluginStore {
   // MCP Servers
   // =========================================================================
 
-  async listMcpServers(): Promise<McpServerConfig[]> {
+  private async listStoredMcpServers(): Promise<McpServerConfig[]> {
     return this.readJson<McpServerConfig>(this.mcpServersPath);
   }
 
+  private mergeBuiltinMcpServers(servers: McpServerConfig[]): McpServerConfig[] {
+    const builtinIds = new Set(BUILTIN_FIXED_MCP_SERVERS.map((server) => server.id));
+    return [
+      ...BUILTIN_FIXED_MCP_SERVERS,
+      ...servers.filter((server) => !builtinIds.has(server.id)),
+    ];
+  }
+
+  async listMcpServers(): Promise<McpServerConfig[]> {
+    return this.mergeBuiltinMcpServers(await this.listStoredMcpServers());
+  }
+
   async createMcpServer(input: Omit<McpServerConfig, "id" | "createdAt" | "updatedAt">): Promise<McpServerConfig> {
-    const servers = await this.listMcpServers();
+    const servers = await this.listStoredMcpServers();
     const now = Date.now();
     const server: McpServerConfig = {
       id: crypto.randomUUID(),
       ...input,
+      builtin: false,
+      fixed: false,
       createdAt: now,
       updatedAt: now,
     };
@@ -337,16 +357,30 @@ export class PluginStore {
   }
 
   async updateMcpServer(id: string, updates: Partial<Omit<McpServerConfig, "id" | "createdAt">>): Promise<McpServerConfig | null> {
-    const servers = await this.listMcpServers();
+    if (isBuiltinFixedMcpServerId(id)) {
+      throw new FixedMcpServerError(`Built-in MCP server "${id}" cannot be modified.`);
+    }
+
+    const servers = await this.listStoredMcpServers();
     const index = servers.findIndex((s) => s.id === id);
     if (index === -1) return null;
-    servers[index] = { ...servers[index], ...updates, updatedAt: Date.now() };
+    servers[index] = {
+      ...servers[index],
+      ...updates,
+      builtin: false,
+      fixed: false,
+      updatedAt: Date.now(),
+    };
     await this.writeJson(this.mcpServersPath, servers);
     return servers[index];
   }
 
   async deleteMcpServer(id: string): Promise<boolean> {
-    const servers = await this.listMcpServers();
+    if (isBuiltinFixedMcpServerId(id)) {
+      throw new FixedMcpServerError(`Built-in MCP server "${id}" cannot be deleted.`);
+    }
+
+    const servers = await this.listStoredMcpServers();
     const filtered = servers.filter((s) => s.id !== id);
     if (filtered.length === servers.length) return false;
     await this.writeJson(this.mcpServersPath, filtered);

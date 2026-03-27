@@ -104,10 +104,12 @@ export function createToolRegistry(
     const browserSessionManager = options.browserSessionManager;
     const browserSessionId = options.browserSessionId;
     const browserRuntime =
-      (browserSessionManager as { constructor?: { name?: string } }).constructor
-        ?.name === "ElectronBrowserAdapter"
-        ? "built-in Electron WebView with direct DOM access"
-        : "managed Chromium automation session with Playwright and a persisted profile";
+      typeof (browserSessionManager as { describeRuntime?: () => string }).describeRuntime === "function"
+        ? (browserSessionManager as { describeRuntime: () => string }).describeRuntime()
+        : (browserSessionManager as { constructor?: { name?: string } }).constructor
+              ?.name === "ElectronBrowserAdapter"
+          ? "built-in Electron WebView with direct DOM access"
+          : "managed Chromium automation session with Playwright and a persisted profile";
 
     browserTools.push(
       {

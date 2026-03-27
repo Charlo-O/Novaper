@@ -15,6 +15,7 @@ contextBridge.exposeInMainWorld("electronAPI", {
   // File operations
   selectFile: (options?: any) => ipcRenderer.invoke("select-file", options),
   readFile: (filePath: string) => ipcRenderer.invoke("read-file", filePath),
+  openExternalUrl: (url: string) => ipcRenderer.invoke("open-external-url", url),
   getPathForFile: (file: File) => webUtils.getPathForFile(file),
 
   // Log
@@ -40,6 +41,8 @@ contextBridge.exposeInMainWorld("electronAPI", {
   goForwardWebview: (id: string) =>
     ipcRenderer.invoke("go-forward-webview", id),
   reloadWebview: (id: string) => ipcRenderer.invoke("reload-webview", id),
+  getBrowserDebugStatus: () => ipcRenderer.invoke("get-browser-debug-status"),
+  openBrowserDevTools: (id?: string) => ipcRenderer.invoke("open-browser-devtools", id),
 
   // Browser profiles
   listBrowserProfiles: () => ipcRenderer.invoke("list-browser-profiles"),

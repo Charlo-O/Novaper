@@ -17,6 +17,31 @@ interface ElectronAPI {
   goBackWebview: (id: string) => Promise<any>;
   goForwardWebview: (id: string) => Promise<any>;
   reloadWebview: (id: string) => Promise<any>;
+  getBrowserDebugStatus: () => Promise<{
+    bridgeEnabled: boolean;
+    defaultTargetId: string | null;
+    inspectBaseUrl: string;
+    inspectTargetsUrl: string;
+    remoteDebuggingPort: number;
+    targetCount: number;
+    targets: Array<{
+      id: string;
+      title: string;
+      url: string;
+      canGoBack: boolean;
+      canGoForward: boolean;
+      isLoading: boolean;
+      isShow: boolean;
+      isActive: boolean;
+      debuggerAttached: boolean;
+      ownedByBridge: boolean;
+    }>;
+    transport: string;
+  }>;
+  openBrowserDevTools: (id?: string) => Promise<{
+    opened: boolean;
+    targetId: string;
+  }>;
   closeWindow: () => void;
   minimizeWindow: () => void;
   toggleMaximizeWindow: () => void;
@@ -25,6 +50,7 @@ interface ElectronAPI {
   getBackendPort: () => Promise<number>;
   selectFile: (options?: any) => Promise<string | null>;
   readFile: (filePath: string) => Promise<string>;
+  openExternalUrl: (url: string) => Promise<void>;
   getPathForFile: (file: File) => string;
   exportLog: () => Promise<string | null>;
   createWebView: (id: string, url: string) => Promise<any>;

@@ -3,6 +3,7 @@ import { createFileRoute } from '@tanstack/react-router';
 import {
   ArrowLeft,
   ArrowRight,
+  Bug,
   Camera,
   ExternalLink,
   Globe,
@@ -24,6 +25,61 @@ type BrowserState = {
   canGoForward: boolean;
   isLoading: boolean;
   isShow: boolean;
+};
+
+type BrowserDebugState = {
+  bridgeEnabled: boolean;
+  defaultTargetId: string | null;
+  inspectBaseUrl: string;
+  inspectTargetsUrl: string;
+  remoteDebuggingPort: number;
+  targetCount: number;
+  targets: Array<{
+    id: string;
+    title: string;
+    url: string;
+    canGoBack: boolean;
+    canGoForward: boolean;
+    isLoading: boolean;
+    isShow: boolean;
+    isActive: boolean;
+    debuggerAttached: boolean;
+    ownedByBridge: boolean;
+  }>;
+  transport: string;
+};
+
+type BrowserRuntimeState = {
+  preferredMode: 'playwright' | 'external_cdp';
+  defaultProfile: string;
+  activeTransport?: string;
+  profiles: Array<{
+    name: string;
+    mode: string;
+    driver: string;
+    transport: string;
+    attachOnly: boolean;
+    available: boolean;
+    browser?: string;
+    browserLabel?: string;
+    cdpUrl?: string;
+    profileDirectory?: string;
+    userDataDir?: string;
+    source?: string;
+    lastError?: string;
+  }>;
+  externalCdp: {
+    preferred: boolean;
+    available: boolean;
+    attachedSessionCount: number;
+    browser?: string;
+    endpointURL?: string;
+    source?: string;
+    port?: number;
+    profileDirectory?: string;
+    lastCheckedAt?: string;
+    error?: string;
+  };
 };
 
 const DEFAULT_URL = 'https://www.google.com';
@@ -55,6 +111,12 @@ function BrowserPage() {
   );
   const [screenshot, setScreenshot] = React.useState<string | null>(null);
   const [profiles, setProfiles] = React.useState<any[]>([]);
+  const [browserDebugState, setBrowserDebugState] =
+    React.useState<BrowserDebugState | null>(null);
+  const [browserRuntimeState, setBrowserRuntimeState] =
+    React.useState<BrowserRuntimeState | null>(null);
+  const [browserDebugApiBaseUrl, setBrowserDebugApiBaseUrl] =
+    React.useState<string | null>(null);
 
   const applyBrowserState = React.useCallback((nextState: BrowserState | null) => {
     setBrowserState(nextState);
@@ -130,6 +192,35 @@ function BrowserPage() {
     setProfiles(nextProfiles ?? []);
   }, [api]);
 
+  const refreshBrowserDebugState = React.useCallback(async () => {
+    if (!api) {
+      return;
+    }
+
+    const runtimeStatusPromise = fetch('/api/browser/runtime/status')
+      .then(async (response) => {
+        if (!response.ok) {
+          return null;
+        }
+        return (await response.json()) as BrowserRuntimeState;
+      })
+      .catch(() => null);
+
+    const [debugStatus, backendPort, runtimeStatus] = await Promise.all([
+      api.getBrowserDebugStatus(),
+      api.getBackendPort().catch(() => null),
+      runtimeStatusPromise,
+    ]);
+
+    setBrowserDebugState(debugStatus);
+    setBrowserRuntimeState(runtimeStatus);
+    setBrowserDebugApiBaseUrl(
+      typeof backendPort === 'number'
+        ? `http://127.0.0.1:${backendPort}/api/browser/debug`
+        : null
+    );
+  }, [api]);
+
   const handleNavigate = React.useCallback(async () => {
     if (!api) {
       return;
@@ -160,7 +251,15 @@ function BrowserPage() {
     setActiveWebviewId(targetId);
     await refreshShownWebviews();
     await syncBrowserBounds();
-  }, [activeWebviewId, api, inputUrl, refreshShownWebviews, syncBrowserBounds]);
+    await refreshBrowserDebugState();
+  }, [
+    activeWebviewId,
+    api,
+    inputUrl,
+    refreshBrowserDebugState,
+    refreshShownWebviews,
+    syncBrowserBounds,
+  ]);
 
   const handleCapture = React.useCallback(async () => {
     if (!api || !activeWebviewId) {
@@ -178,7 +277,8 @@ function BrowserPage() {
     }
     await api.goBackWebview(activeWebviewId);
     await refreshWebviewState(activeWebviewId);
-  }, [activeWebviewId, api, refreshWebviewState]);
+    await refreshBrowserDebugState();
+  }, [activeWebviewId, api, refreshBrowserDebugState, refreshWebviewState]);
 
   const handleForward = React.useCallback(async () => {
     if (!api || !activeWebviewId) {
@@ -186,7 +286,8 @@ function BrowserPage() {
     }
     await api.goForwardWebview(activeWebviewId);
     await refreshWebviewState(activeWebviewId);
-  }, [activeWebviewId, api, refreshWebviewState]);
+    await refreshBrowserDebugState();
+  }, [activeWebviewId, api, refreshBrowserDebugState, refreshWebviewState]);
 
   const handleReload = React.useCallback(async () => {
     if (!api || !activeWebviewId) {
@@ -194,7 +295,8 @@ function BrowserPage() {
     }
     await api.reloadWebview(activeWebviewId);
     await refreshWebviewState(activeWebviewId);
-  }, [activeWebviewId, api, refreshWebviewState]);
+    await refreshBrowserDebugState();
+  }, [activeWebviewId, api, refreshBrowserDebugState, refreshWebviewState]);
 
   React.useEffect(() => {
     if (!api) {
@@ -203,7 +305,8 @@ function BrowserPage() {
 
     void refreshShownWebviews();
     void handleLoadProfiles();
-  }, [api, handleLoadProfiles, refreshShownWebviews]);
+    void refreshBrowserDebugState();
+  }, [api, handleLoadProfiles, refreshBrowserDebugState, refreshShownWebviews]);
 
   React.useEffect(() => {
     if (!api) {
@@ -214,6 +317,7 @@ function BrowserPage() {
       setShownWebviewIds(prev => (prev.includes(id) ? prev : [...prev, id]));
       setActiveWebviewId(id);
       void refreshWebviewState(id);
+      void refreshBrowserDebugState();
       window.requestAnimationFrame(() => {
         void syncBrowserBounds();
       });
@@ -225,6 +329,7 @@ function BrowserPage() {
         setActiveWebviewId(null);
       }
       void refreshShownWebviews();
+      void refreshBrowserDebugState();
     });
 
     const cleanupNavigated = api.onWebviewNavigated((id: string, url: string) => {
@@ -232,6 +337,7 @@ function BrowserPage() {
       setActiveWebviewId(id);
       setInputUrl(url);
       void refreshWebviewState(id);
+      void refreshBrowserDebugState();
     });
 
     const cleanupUrl = api.onUrlUpdated((url: string) => {
@@ -245,7 +351,28 @@ function BrowserPage() {
       cleanupNavigated();
       cleanupUrl();
     };
-  }, [activeWebviewId, api, refreshShownWebviews, refreshWebviewState, syncBrowserBounds]);
+  }, [
+    activeWebviewId,
+    api,
+    refreshBrowserDebugState,
+    refreshShownWebviews,
+    refreshWebviewState,
+    syncBrowserBounds,
+  ]);
+
+  React.useEffect(() => {
+    if (!api) {
+      return;
+    }
+
+    const timer = window.setInterval(() => {
+      void refreshBrowserDebugState();
+    }, 5000);
+
+    return () => {
+      window.clearInterval(timer);
+    };
+  }, [api, refreshBrowserDebugState]);
 
   React.useEffect(() => {
     if (!api || shownWebviewIds.length === 0 || !browserHostRef.current) {
@@ -426,6 +553,119 @@ function BrowserPage() {
                 <span className="rounded-full bg-muted px-2 py-1">
                   {shownWebviewIds.length} visible
                 </span>
+              </div>
+            </div>
+          </div>
+
+          <div className="space-y-2">
+            <div className="flex items-center gap-2 text-xs font-semibold uppercase tracking-[0.14em] text-muted-foreground">
+              <Bug className="h-3.5 w-3.5" />
+              Remote Debugging
+            </div>
+            <div className="rounded-2xl border border-border bg-background/70 p-4">
+              <div className="text-sm font-medium text-foreground">
+                {browserDebugState?.bridgeEnabled
+                  ? 'Native CDP bridge enabled'
+                  : 'Debug bridge unavailable'}
+              </div>
+              <div className="mt-2 text-xs text-muted-foreground">
+                {browserDebugState?.transport || 'electron-debugger'} · port{' '}
+                {browserDebugState?.remoteDebuggingPort ?? 'n/a'}
+              </div>
+              <div className="mt-3 flex flex-wrap gap-2 text-xs text-muted-foreground">
+                <span className="rounded-full bg-muted px-2 py-1">
+                  {browserDebugState?.targetCount ?? 0} targets
+                </span>
+                <span className="rounded-full bg-muted px-2 py-1">
+                  default {browserDebugState?.defaultTargetId || 'none'}
+                </span>
+              </div>
+                    <div className="mt-3 space-y-2 text-xs text-muted-foreground">
+                      <div className="break-all">
+                        Inspector: {browserDebugState?.inspectTargetsUrl || 'n/a'}
+                      </div>
+                      <div className="break-all">
+                        API: {browserDebugApiBaseUrl || 'n/a'}
+                      </div>
+                    </div>
+                    <div className="mt-4 rounded-xl bg-muted/50 p-3 text-xs text-muted-foreground">
+                      <div className="font-medium text-foreground">
+                        AI Browser Runtime
+                      </div>
+                      <div className="mt-1">
+                        {browserRuntimeState?.preferredMode === 'external_cdp'
+                          ? 'OpenClaw-style attach first'
+                          : 'Managed profile first'}
+                      </div>
+                      <div className="mt-2 flex flex-wrap gap-2">
+                        <span className="rounded-full bg-background px-2 py-1">
+                          {browserRuntimeState?.externalCdp.attachedSessionCount ?? 0}{' '}
+                          attached
+                        </span>
+                        <span className="rounded-full bg-background px-2 py-1">
+                          {browserRuntimeState?.activeTransport || browserRuntimeState?.externalCdp.source || 'idle'}
+                        </span>
+                        <span className="rounded-full bg-background px-2 py-1">
+                          default {browserRuntimeState?.defaultProfile || 'n/a'}
+                        </span>
+                      </div>
+                      <div className="mt-2 break-all">
+                        {browserRuntimeState?.externalCdp.endpointURL ||
+                          browserRuntimeState?.externalCdp.error ||
+                          'No external CDP endpoint detected yet.'}
+                      </div>
+                      <div className="mt-3 space-y-2">
+                        {(browserRuntimeState?.profiles ?? []).map(profile => (
+                          <div
+                            key={profile.name}
+                            className="rounded-lg border border-border/70 bg-background px-3 py-2"
+                          >
+                            <div className="flex items-center justify-between gap-2">
+                              <div className="font-medium text-foreground">
+                                {profile.name}
+                              </div>
+                              <span className="rounded-full bg-muted px-2 py-1 text-[11px] uppercase tracking-wide">
+                                {profile.available ? 'ready' : 'idle'}
+                              </span>
+                            </div>
+                            <div className="mt-1 text-[11px] text-muted-foreground">
+                              {profile.transport} / {profile.mode}
+                              {profile.attachOnly ? ' / attach-only' : ''}
+                            </div>
+                            <div className="mt-1 break-all text-[11px] text-muted-foreground">
+                              {profile.cdpUrl ||
+                                profile.userDataDir ||
+                                profile.lastError ||
+                                'No endpoint metadata'}
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                    <div className="mt-4 flex flex-wrap gap-2">
+                      <button
+                        type="button"
+                  onClick={() =>
+                    api?.openBrowserDevTools(
+                      activeWebviewId || browserDebugState?.defaultTargetId || undefined
+                    )
+                  }
+                  disabled={!api || !(activeWebviewId || browserDebugState?.defaultTargetId)}
+                  className="rounded-xl border border-border px-3 py-2 text-sm text-foreground transition-colors hover:bg-muted disabled:cursor-not-allowed disabled:opacity-40"
+                >
+                  Open DevTools
+                </button>
+                <button
+                  type="button"
+                  onClick={() =>
+                    browserDebugState?.inspectTargetsUrl &&
+                    api?.openExternalUrl(browserDebugState.inspectTargetsUrl)
+                  }
+                  disabled={!api || !browserDebugState?.inspectTargetsUrl}
+                  className="rounded-xl border border-border px-3 py-2 text-sm text-foreground transition-colors hover:bg-muted disabled:cursor-not-allowed disabled:opacity-40"
+                >
+                  Open Inspector JSON
+                </button>
               </div>
             </div>
           </div>

@@ -183,6 +183,29 @@ export class WebViewManager {
     };
   }
 
+  public getWebContents(id: string) {
+    const info = this.webViews.get(id);
+    if (!info || info.view.webContents.isDestroyed()) {
+      return null;
+    }
+    return info.view.webContents;
+  }
+
+  public listWebviews() {
+    return Array.from(this.webViews.values())
+      .filter((info) => !info.view.webContents.isDestroyed())
+      .map((info) => ({
+        id: info.id,
+        url: info.view.webContents.getURL() || info.currentUrl || "about:blank",
+        title: info.view.webContents.getTitle(),
+        canGoBack: info.view.webContents.canGoBack(),
+        canGoForward: info.view.webContents.canGoForward(),
+        isLoading: info.view.webContents.isLoading(),
+        isShow: info.isShow,
+        isActive: info.isActive,
+      }));
+  }
+
   public async createWebview(id: string = "1", url: string = "about:blank?use=0") {
     if (this.webViews.has(id)) {
       return { success: false, error: `Webview with id ${id} already exists` };
@@ -329,6 +352,25 @@ export class WebViewManager {
       info = this.webViews.get(id)!;
     }
 
+    this.webViews.forEach((otherInfo, otherId) => {
+      if (otherId === id || !otherInfo.isShow) {
+        return;
+      }
+
+      const numId = Number(otherId);
+      otherInfo.view.setBounds({
+        x: -9999 + numId * 100,
+        y: -9999 + numId * 100,
+        width: 100,
+        height: 100,
+      });
+      otherInfo.isShow = false;
+      if (!otherInfo.view.webContents.isDestroyed()) {
+        otherInfo.view.webContents.setBackgroundThrottling(true);
+      }
+      this.win?.webContents.send("webview-hide", otherId);
+    });
+
     const currentUrl = info.view.webContents.getURL();
     this.win?.webContents.send("url-updated", currentUrl);
     info.isShow = true;
@@ -336,6 +378,12 @@ export class WebViewManager {
     if (!info.view.webContents.isDestroyed()) {
       info.view.webContents.setBackgroundThrottling(false);
     }
+    try {
+      this.win?.contentView.removeChildView(info.view);
+    } catch {
+      // Ignore if the view is already detached.
+    }
+    this.win?.contentView.addChildView(info.view);
     this.win?.webContents.send("webview-show", id);
     return { success: true };
   }
